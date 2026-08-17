@@ -538,6 +538,11 @@ def board_content_region(canvas: Canvas, *, gap: int, background_content_ratio: 
     measured_bottom = round(canvas.height * background_content_ratio) + max(28, gap * 2)
     top = max(canvas.content_top, round(canvas.height * 0.20), measured_bottom)
     if bottom <= top:
+        # A malformed or over-sensitive background-bound measurement must not
+        # make the whole project uncompilable. Fall back to the reserved top
+        # fifth and let the element images occupy the remaining stage.
+        top = max(canvas.content_top, round(canvas.height * 0.20))
+    if bottom <= top:
         raise ValueError("标题区和字幕区之间没有可用的板书内容空间")
     return Box(
         canvas.content_left,

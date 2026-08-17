@@ -2,7 +2,50 @@
 
 from __future__ import annotations
 
+from enum import Enum
+
 from .models import MotionPlan, TypographyPlan
+
+
+class MotionEffect(str, Enum):
+    FADE_IN = "渐显"
+    DISSOLVE = "溶解"
+    SUBTLE_ZOOM = "轻微放大"
+    FADE_OUT = "渐隐"
+    REVEAL_UP = "向上露出"
+    FEATHER_WIPE_RIGHT = "羽化向右擦开"
+    SLIDE_RIGHT = "向右滑动"
+    SLIDE_LEFT = "向左滑动"
+    TYPEWRITER = "逐字显影"
+    RETRO_TYPEWRITER = "复古打字机"
+    ELASTIC = "弹性伸缩"
+    BOUNCE_TOP_RIGHT = "右上弹入"
+    REVEAL_RIGHT = "向右露出"
+    REVEAL_LEFT = "向左露出"
+    TYPE_CENTER = "居中打字"
+    WAVE_IN = "波浪弹入"
+    ZOOM = "放大"
+    SHRINK = "缩小"
+    SPRING_IN = "弹入"
+    SPRING_OUT = "弹出"
+    SPRING = "弹簧"
+    DISSOLVE_UP = "向上溶解"
+    FEATHER_WIPE_LEFT_OUT = "羽化向左擦除"
+    FEATHER_WIPE_LEFT = "羽化向左擦开"
+    WAVE_OUT = "波浪弹出"
+    TYPEWRITER_II = "打字机_II"
+    DYNAMIC_ZOOM = "动感放大"
+    PUSH_IN = "弹近"
+    TAP_OPEN = "点开"
+    BLUR_FOCUS = "模糊聚焦"
+    EXPAND = "展开"
+    PUSH_OUT = "弹远"
+    SLIDE_UP = "向上滑动"
+    FLOAT = "漂浮"
+
+
+# Add explicitly disallowed values here without changing the candidate profiles.
+BANNED_MOTION_EFFECTS: frozenset[str] = frozenset()
 
 
 TYPOGRAPHY_PRESETS = (
@@ -119,7 +162,14 @@ EFFECT_PROFILES = {
 
 
 def merge_profile_values(key: str) -> tuple[str, ...]:
-    return tuple(dict.fromkeys(value for profile in EFFECT_PROFILES.values() for value in profile[key]))
+    return tuple(
+        dict.fromkeys(
+            MotionEffect(value).value
+            for profile in EFFECT_PROFILES.values()
+            for value in profile[key]
+            if value not in BANNED_MOTION_EFFECTS
+        )
+    )
 
 
 TITLE_TEXT_INTROS = merge_profile_values("title_intros")

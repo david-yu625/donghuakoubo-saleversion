@@ -156,6 +156,7 @@ class Options:
     topic: str
     story_world: str
     target_chars: str
+    context: str = ""
     image_model: str = DEFAULT_IMAGE_MODEL
     visual_theme: str = resolve_visual_theme(DEFAULT_VISUAL_THEME).label
     orientation: str = "竖屏"
@@ -532,6 +533,8 @@ def build_commands(options: Options) -> tuple[list[tuple[str, list[str]]], Path]
         ]
         if options.story_world.strip():
             command.extend(["--story-world", options.story_world.strip()])
+        if options.context.strip():
+            command.extend(["--context", options.context.strip()])
         commands.append(("01 文案", command))
     if options.run_voice:
         commands.append(("02 配音", [py, "-m", "src.02_generate_voice_timeline", str(wenan)]))

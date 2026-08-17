@@ -34,7 +34,7 @@ SYSTEM_PROMPT = """
 3.拒绝废话。
 4.文案要符合自媒体文案的特点，开头吸引人，信息密度高。
 5.行文思路要有逻辑，一步一步递进式讲解，也可以分类说明，千万不可以杂乱无章。
-6.不需要做其他的分镜头设计，只需要将最终的文案以一段话的形式输出给我就行。
+6.不需要做其他的分镜头设计，只需要输出最终文案。分行服务于语义和 TTS：一句一行，每行表达一个完整动作、事实或因果；不要把一句话拆成多个空短句，也不要把多句话合并在一行。
 7.要有一点口播感，千万别啰嗦。
 8.不要虚构作者身份、账号名称、人物称呼或关注引导。用户没有提供身份信息时，不要在文案中自称。
 9.每句话必须新增事实、因果或解释。同一个问题只问一次，同一个比喻只用一次，同一个结论只说一次。结尾不要复述全文；删掉后不影响理解的句子必须删除。
@@ -50,8 +50,8 @@ SYSTEM_PROMPT = """
 
 OUTPUT_PROTOCOL_PROMPT = """
 #程序输出
-程序需要可解析的 JSON，只输出以下对象，不要输出解释、Markdown 或分镜：
-{"wenan":"完整文案"}
+程序需要可解析的 JSON，只输出以下对象，不要输出解释、Markdown 或分镜。wenan 中必须使用 \\n 分隔每句话：
+{"wenan":"第一句话\\n第二句话\\n第三句话"}
 """.strip()
 
 
@@ -63,6 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--reference", type=Path, default=DEFAULT_REFERENCE, help="参考样例文件或目录；默认读取 copywriting_style_reference.md")
     parser.add_argument("--target-chars", type=int, default=500, help="文案最长字数；0 表示不限制。")
     parser.add_argument("--story-world", default="", help="可选故事载体，例如快递站、图书馆、工厂、餐馆；留空或填写自动选择时由模型判断是否需要。")
+    parser.add_argument("--context", default="", help="补充主题背景、概念定义或行文思路，帮助模型避免歧义。")
     parser.add_argument("--api-key", default="", help="默认读取 DEEPSEEK_API_KEY")
     parser.add_argument("--model", default="", help=f"默认读取 DEEPSEEK_MODEL 或 {DEFAULT_MODEL}")
     parser.add_argument("--base-url", default="", help="默认 DeepSeek OpenAI 兼容地址")
@@ -86,6 +87,7 @@ def main() -> int:
             max_tokens=args.max_tokens,
             target_chars=args.target_chars,
             story_world=args.story_world,
+            context=args.context,
         )
         wenan = clean_wenan(str(payload["wenan"]))
     except (KeyError, ValueError, RuntimeError, OpenAIError) as exc:
@@ -107,13 +109,17 @@ def generate_copywriting(
     max_tokens: int,
     target_chars: int,
     story_world: str,
+    context: str = "",
 ) -> dict[str, object]:
     if not api_key:
         raise ValueError("缺少 DEEPSEEK_API_KEY")
     client = OpenAI(api_key=api_key, base_url=base_url)
     del reference, story_world
     system_prompt = build_system_prompt(topic)
-    user_prompt = length_guidance(target_chars)
+    user_prompt = "\n\n".join([
+        context_guidance(context, topic),
+        length_guidance(target_chars),
+    ])
     response = client.chat.completions.create(
         model=model,
         messages=[
@@ -145,8 +151,43 @@ def generate_copywriting(
             payload = parse_copywriting_payload(repaired_content)
         except ValueError as exc:
             raise RuntimeError("模型连续返回无法解析的文案 JSON，请重试") from exc
+    try:
+        validate_copywriting_text(str(payload["wenan"]), target_chars)
+    except ValueError as validation_error:
+        rewrite_response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "system", "content": OUTPUT_PROTOCOL_PROMPT},
+                {"role": "user", "content": user_prompt},
+                {"role": "assistant", "content": raw_content},
+                {
+                    "role": "user",
+                    "content": (
+                        f"上一版文案未通过逐行格式校验：{validation_error}\n"
+                        "请重写完整文案。一句话一行，每行语义完整，并输出严格 JSON。"
+                    ),
+                },
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=max_tokens,
+        )
+        try:
+            payload = parse_copywriting_payload(rewrite_response.choices[0].message.content or "")
+            validate_copywriting_text(str(payload["wenan"]), target_chars)
+        except ValueError as exc:
+            raise RuntimeError("模型连续返回未按一句一行排版的文案，请重试") from exc
     payload["wenan"] = clean_wenan(str(payload["wenan"]))
     return payload
+
+
+def validate_copywriting_text(text: str, target_chars: int = 0) -> None:
+    lines = [line.strip() for line in clean_wenan(text).splitlines() if line.strip()]
+    minimum_lines = 3 if 0 < target_chars < 60 else 6
+    if len(lines) < minimum_lines:
+        raise ValueError(f"文案必须至少拆成 {minimum_lines} 行，不能把多句话塞在一行")
+    if len(set(lines)) != len(lines):
+        raise ValueError("文案包含重复行")
 
 
 def build_system_prompt(topic: str) -> str:
@@ -157,6 +198,23 @@ def build_system_prompt(topic: str) -> str:
         "#初始化",
         f"    1.我要讲解的题目是“{topic}”。",
     ])
+
+
+def context_guidance(context: str, topic: str) -> str:
+    value = context.strip()
+    if not value:
+        return (
+            "#上下文与行文思路\n"
+            f"当前题目是：{topic}\n"
+            "未提供额外上下文。严格按照题目本身理解，不要擅自替换关键词含义。"
+        )
+    return (
+        "#上下文与行文思路\n"
+        f"当前题目是：{topic}\n"
+        "用户补充的背景和要求如下。它用于消歧和限定表达方向，优先解释题目中的专有含义；"
+        "不要把补充内容扩展成题目之外的新主题，也不要凭空添加其中没有提供的事实。\n"
+        f"{value}"
+    )
 
 
 def parse_copywriting_payload(raw_content: str) -> dict[str, object]:

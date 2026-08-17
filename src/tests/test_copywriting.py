@@ -17,6 +17,8 @@ class CopywritingResponseTest(unittest.TestCase):
         self.assertNotIn("每句话采用6到15个字", copywriting.SYSTEM_PROMPT)
         self.assertNotIn("结尾留钩子和悬念", copywriting.SYSTEM_PROMPT)
         self.assertIn("不需要做其他的分镜头设计", copywriting.SYSTEM_PROMPT)
+        self.assertIn("一句一行", copywriting.SYSTEM_PROMPT)
+        self.assertNotIn("以一段话的形式输出", copywriting.SYSTEM_PROMPT)
         self.assertIn("不要虚构作者身份、账号名称", copywriting.SYSTEM_PROMPT)
         self.assertIn("不要在文案中自称", copywriting.SYSTEM_PROMPT)
         self.assertIn("每句话必须新增事实、因果或解释", copywriting.SYSTEM_PROMPT)
@@ -37,6 +39,7 @@ class CopywritingResponseTest(unittest.TestCase):
         self.assertIn("#要求", copywriting.SYSTEM_PROMPT)
         self.assertNotIn("***", copywriting.SYSTEM_PROMPT)
         self.assertIn("#程序输出", copywriting.OUTPUT_PROTOCOL_PROMPT)
+        self.assertIn("\\n 分隔每句话", copywriting.OUTPUT_PROTOCOL_PROMPT)
 
     def test_valid_json_and_code_fence(self):
         self.assertEqual(copywriting.parse_copywriting_payload('{"wenan":"标题\\n正文"}')["wenan"], "标题\n正文")
@@ -48,6 +51,14 @@ class CopywritingResponseTest(unittest.TestCase):
         self.assertIn("#初始化", prompt)
         self.assertIn("我要讲解的题目是“计算机起源”。", prompt)
         self.assertNotIn("***", prompt)
+
+    def test_context_guidance_preserves_topic_and_disambiguates_terms(self):
+        prompt = copywriting.context_guidance("", "养龙虾")
+        self.assertIn("当前题目是：养龙虾", prompt)
+        self.assertIn("未提供额外上下文", prompt)
+        prompt = copywriting.context_guidance("这里的养龙虾指 AI 生成养殖方案", "养龙虾")
+        self.assertIn("用于消歧", prompt)
+        self.assertIn("这里的养龙虾指 AI 生成养殖方案", prompt)
 
     def test_repairs_raw_newlines_and_unescaped_quotes(self):
         malformed = '{"wenan":"什么是知识传递\n老师说"知识传递"很重要\n学生点头"}'
@@ -70,6 +81,7 @@ class CopywritingResponseTest(unittest.TestCase):
                 max_tokens=100,
                 target_chars=100,
                 story_world="",
+                context="这里指 AI 生成养殖方案，不是现实养龙虾。",
             )
         self.assertIn("第一层", payload["wenan"])
         self.assertEqual(client.chat.completions.create.call_count, 2)
@@ -80,6 +92,7 @@ class CopywritingResponseTest(unittest.TestCase):
         self.assertIn("文案最长不超过 100 个有效字", first_prompt)
         self.assertIn("不是最低字数", first_prompt)
         self.assertIn("#字数要求", first_prompt)
+        self.assertIn("这里指 AI 生成养殖方案", first_prompt)
         self.assertNotIn("至少两次转折", first_prompt)
 
     def test_length_guidance_is_sectioned_when_target_is_omitted(self):
@@ -90,8 +103,11 @@ class CopywritingResponseTest(unittest.TestCase):
         self.assertIn("通常以 350~450 字为合适篇幅", copywriting.length_guidance(500))
         self.assertIn("信息量大的主题可以写到接近 500 字", copywriting.length_guidance(500))
 
-    def test_single_line_copy_is_saved_without_validation_retry(self):
-        responses = [SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"wenan":"标题，现象，原因，机制，结果"}'))])]
+    def test_single_line_copy_is_rewritten_as_line_by_line_copy(self):
+        responses = [
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"wenan":"标题，现象，原因，机制，结果"}'))]),
+            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"wenan":"标题\\n具体现象\\n直接原因\\n处理机制\\n可见结果\\n最终结论"}'))]),
+        ]
         client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=Mock(side_effect=responses))))
         with patch.object(copywriting, "OpenAI", return_value=client):
             payload = copywriting.generate_copywriting(
@@ -105,9 +121,10 @@ class CopywritingResponseTest(unittest.TestCase):
                 story_world="",
             )
 
-        self.assertEqual(payload["wenan"], "标题，现象，原因，机制，结果")
-        self.assertNotIn("_validation_warning", payload)
-        self.assertEqual(client.chat.completions.create.call_count, 1)
+        self.assertEqual(len(payload["wenan"].splitlines()), 6)
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        rewrite_messages = client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        self.assertIn("一句话一行", rewrite_messages[-1]["content"])
 
 
 if __name__ == "__main__":

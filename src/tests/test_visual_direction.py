@@ -156,11 +156,13 @@ class VisualDirectorTest(unittest.TestCase):
             all(typography.label_font != "古印宋简" for typography in TYPOGRAPHY_PRESETS)
         )
 
-    def test_distributed_choices_are_stable_without_adjacent_repeats(self):
+    def test_distributed_choices_are_random_without_adjacent_repeats(self):
         first = distributed_choices(VIDEO_INTROS, 40, "scene_001")
         second = distributed_choices(VIDEO_INTROS, 40, "scene_001")
-        self.assertEqual(first, second)
+        self.assertTrue(set(first).issubset(set(VIDEO_INTROS)))
+        self.assertTrue(set(second).issubset(set(VIDEO_INTROS)))
         self.assertTrue(all(previous != current for previous, current in zip(first, first[1:])))
+        self.assertTrue(all(previous != current for previous, current in zip(second, second[1:])))
 
     def test_video_motion_presets_exclude_wipes_flips_and_scan_light(self):
         all_motion = (*VIDEO_INTROS, *VIDEO_OUTROS, *VIDEO_EFFECTS)

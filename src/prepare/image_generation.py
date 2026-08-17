@@ -373,8 +373,12 @@ def background_content_bottom_ratio(path: Path) -> float:
         image.load()
     difference = ImageChops.difference(image, Image.new("RGB", image.size, "#ffffff")).convert("L")
     mask = difference.point(lambda value: 255 if value > BACKGROUND_CONTENT_THRESHOLD else 0)
-    bbox = mask.getbbox()
-    return 0.0 if bbox is None else round(bbox[3] / image.height, 6)
+    # Generated whiteboards often include a thin frame around the canvas. Ignore
+    # that frame before measuring the usable content boundary.
+    margin = max(2, round(min(image.size) * 0.01))
+    interior = mask.crop((margin, margin, image.width - margin, image.height - margin))
+    bbox = interior.getbbox()
+    return 0.0 if bbox is None else round((bbox[3] + margin) / image.height, 6)
 
 
 def record_background_content_bounds(path: Path) -> None:

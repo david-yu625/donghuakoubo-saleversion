@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import random
 from dataclasses import replace
 
@@ -10,6 +9,7 @@ from ..core.models import LayoutResult
 from ..settings import DEFAULT_KEYWORD_FONT, KEYWORD_TEXT_COLORS
 from .models import VisualPlan
 from .presets import (
+    BANNED_MOTION_EFFECTS,
     EFFECT_PROFILES,
     EMPHASIS_TEXT_LOOPS,
     SCENE_TRANSITION_INTROS,
@@ -55,6 +55,7 @@ def apply_visual_plan(
         EMPHASIS_TEXT_LOOPS,
         1 if emphasis_element is not None else 0,
         f"{plan.scene_id}:text-loop",
+        randomize=True,
     )
     video_intros = tiered_choices(
         profile_name, profile, support_profile, "video_intros", overlay_image_count, f"{plan.scene_id}:video-in"
@@ -63,7 +64,9 @@ def apply_visual_plan(
         profile_name, profile, support_profile, "video_outros", overlay_image_count, f"{plan.scene_id}:video-out"
     )
     video_outros = avoid_matching_pairs(video_intros, video_outros, support_profile["video_outros"])
-    video_effects = distributed_choices(VIDEO_EFFECTS, overlay_image_count, f"{plan.scene_id}:video-effect")
+    video_effects = distributed_choices(
+        VIDEO_EFFECTS, overlay_image_count, f"{plan.scene_id}:video-effect", randomize=True
+    )
     keyword_colors = distributed_keyword_text_colors(
         keyword_count,
         f"{plan.scene_id}:keyword-text-color",
@@ -111,6 +114,7 @@ def apply_visual_plan(
                     SCENE_TRANSITION_INTROS,
                     background_index + 1,
                     f"{plan.scene_id}:scene-transition",
+                    randomize=True,
                 )[background_index]
                 metadata.pop("video_outro", None)
                 metadata.pop("video_effect", None)
@@ -140,7 +144,7 @@ def apply_visual_plan(
 
 
 def distributed_keyword_text_colors(count: int, seed: str, *, avoid: str = "") -> list[str]:
-    colors = distributed_choices(KEYWORD_TEXT_COLORS, count, seed)
+    colors = distributed_choices(KEYWORD_TEXT_COLORS, count, seed, randomize=False)
     if colors and colors[0] == avoid and len(KEYWORD_TEXT_COLORS) > 1:
         replacement = next(color for color in KEYWORD_TEXT_COLORS if color != avoid)
         try:
@@ -152,15 +156,23 @@ def distributed_keyword_text_colors(count: int, seed: str, *, avoid: str = "") -
     return colors
 
 
-def distributed_choices(options: tuple[str, ...], count: int, seed: str) -> list[str]:
+def distributed_choices(
+    options: tuple[str, ...], count: int, seed: str, *, randomize: bool = True
+) -> list[str]:
     if count <= 0:
         return []
-    if not options:
+    available = tuple(option for option in options if option not in BANNED_MOTION_EFFECTS)
+    if not available:
         return [""] * count
-    rng = random.Random(int.from_bytes(hashlib.sha256(seed.encode("utf-8")).digest()[:8], "big"))
+    if randomize:
+        rng = random.SystemRandom()
+    else:
+        # Keep the public helper reproducible for callers that use it as a
+        # planning primitive; production visual plans opt into fresh draws.
+        rng = random.Random(seed)
     selected: list[str] = []
     while len(selected) < count:
-        batch = list(options)
+        batch = list(available)
         rng.shuffle(batch)
         if selected and batch[0] == selected[-1] and len(batch) > 1:
             batch[0], batch[1] = batch[1], batch[0]
@@ -177,10 +189,10 @@ def tiered_choices(
     seed: str,
 ) -> list[str]:
     if profile_name not in {"story", "focus"} or count <= 1:
-        return distributed_choices(profile[key], count, seed)
+        return distributed_choices(profile[key], count, seed, randomize=True)
     return (
-        distributed_choices(profile[key], 1, f"{seed}:accent")
-        + distributed_choices(support_profile[key], count - 1, f"{seed}:support")
+        distributed_choices(profile[key], 1, f"{seed}:accent", randomize=True)
+        + distributed_choices(support_profile[key], count - 1, f"{seed}:support", randomize=True)
     )
 
 

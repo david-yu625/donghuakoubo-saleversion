@@ -315,6 +315,16 @@ class GuiPipelineTest(unittest.TestCase):
             command = next(command for command_label, command in commands if command_label == label)
             self.assertEqual(command[command.index("--orientation") + 1], "横屏")
 
+    def test_copywriting_context_is_passed_to_generation_step(self):
+        commands, _ = build_commands(Options(
+            topic="养龙虾",
+            story_world="",
+            target_chars="260",
+            context="这里指 AI 生成养殖方案，重点解释如何消歧。",
+        ))
+        command = next(command for label, command in commands if label == "01 文案")
+        self.assertEqual(command[command.index("--context") + 1], "这里指 AI 生成养殖方案，重点解释如何消歧。")
+
     def test_explicit_image_rerun_can_overwrite_existing_assets(self):
         commands, _ = build_commands(Options(
             topic="测试主题",

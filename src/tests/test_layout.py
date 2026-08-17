@@ -180,6 +180,24 @@ class LayoutEngineTest(unittest.TestCase):
         overlay = next(item for item in result.elements if item.role == "overlay")
         self.assertGreaterEqual(overlay.box.y, round(result.canvas.height * 0.31) + 28)
 
+    def test_background_stack_falls_back_when_measured_content_fills_canvas(self):
+        with tempfile.TemporaryDirectory() as directory:
+            background = Path(directory) / "s3_bg01.png"
+            background.write_bytes(b"placeholder")
+            (Path(directory) / "background_content_bounds.json").write_text(
+                '{"s3_bg01.png": {"content_bottom_ratio": 0.996528}}', encoding="utf-8"
+            )
+            engine = LayoutEngine(canvas=canvas_for_orientation("横屏"))
+            result = engine.build("background_stack", SceneContent(
+                elements=(
+                    SceneElement("s3_bg01", "image", str(background), 0, 4000, role="background"),
+                    SceneElement("s3_img01", "image", "first.png", 0, 4000, role="overlay"),
+                ),
+                duration_ms=4000,
+            ))
+        overlay = next(item for item in result.elements if item.role == "overlay")
+        self.assertGreaterEqual(overlay.box.y, round(result.canvas.height * 0.20))
+
     def test_background_stack_rotates_landscape_compositions_by_shot(self):
         engine = LayoutEngine(canvas=canvas_for_orientation("横屏"))
         results = []

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sys
+import random
 from dataclasses import dataclass, replace
+from enum import Enum
 from pathlib import Path
 
 from PIL import Image, ImageDraw
@@ -59,12 +61,14 @@ BACKGROUND_TRACK_RELATIVE_INDEX = -100
 SCENE_TRANSITION_DURATION_MS = 450
 # Subtle, free transitions suited to a whiteboard sequence. Resource ids are
 # stable even when the vendored enum source is decoded with a different locale.
-SCENE_TRANSITION_RESOURCE_IDS = (
-    "6724845717472416269",  # dissolve
-    "6911569618171597320",  # blur
-    "7450031573958660645",  # horizontal blur
-    "7125661387568714247",  # vertical blur
-)
+class SceneTransitionEffect(str, Enum):
+    DISSOLVE = "6724845717472416269"
+    BLUR = "6911569618171597320"
+    HORIZONTAL_BLUR = "7450031573958660645"
+    VERTICAL_BLUR = "7125661387568714247"
+
+
+SCENE_TRANSITION_RESOURCE_IDS = tuple(effect.value for effect in SceneTransitionEffect)
 BANNED_FONT_NAMES = {
     "\u7ad9\u9177\u9177\u9ed1\u4f53",
     "\u53e4\u5370\u5b8b\u7b80",
@@ -285,8 +289,12 @@ def transition_member_by_resource_id(resource_id: str):
     )
 
 
-def scene_transition_for_index(index: int):
-    resource_id = SCENE_TRANSITION_RESOURCE_IDS[index % len(SCENE_TRANSITION_RESOURCE_IDS)]
+def scene_transition_for_index(index: int, *, randomize: bool = False, previous_resource_id: str = ""):
+    if randomize:
+        candidates = [resource_id for resource_id in SCENE_TRANSITION_RESOURCE_IDS if resource_id != previous_resource_id]
+        resource_id = random.SystemRandom().choice(candidates or list(SCENE_TRANSITION_RESOURCE_IDS))
+    else:
+        resource_id = SCENE_TRANSITION_RESOURCE_IDS[index % len(SCENE_TRANSITION_RESOURCE_IDS)]
     transition = transition_member_by_resource_id(resource_id)
     if transition is None:
         raise RuntimeError(f"missing Jianying scene transition resource: {resource_id}")
@@ -410,6 +418,7 @@ LANDSCAPE_TITLE_BAR_MIN_WIDTH_RATIO = 0.84
 LANDSCAPE_TITLE_STYLE_SCALE = 0.82
 LANDSCAPE_TITLE_BAR_HEIGHT_SCALE = 0.82
 COMPACT_TITLE_STYLE_SCALE = 0.82
+COMPACT_TITLE_STYLE_BOOST = 2.0
 COMPACT_TITLE_BAR_HEIGHT = 104
 COMPACT_TITLE_LINE_HEIGHT = 6
 SUBTITLE_BACKGROUND_WIDTH = 0.24
@@ -485,9 +494,11 @@ def global_title_presentation(
     if variant not in {"default", "compact"}:
         raise ValueError(f"unsupported global title variant: {variant}")
     variant_scale = COMPACT_TITLE_STYLE_SCALE if compact else 1.0
+    title_letter_spacing = 0 if compact else TITLE_LETTER_SPACING
     base_style_size = max(
         7.2,
-        TITLE_TEXT_STYLE_SIZE * height_scale * (LANDSCAPE_TITLE_STYLE_SCALE if landscape else 1.0) * variant_scale,
+        TITLE_TEXT_STYLE_SIZE * height_scale * (LANDSCAPE_TITLE_STYLE_SCALE if landscape else 1.0) * variant_scale
+        + (COMPACT_TITLE_STYLE_BOOST if compact else 0),
     )
     min_style_size = max(
         5.8,
@@ -507,7 +518,7 @@ def global_title_presentation(
         round(TITLE_BAR_MAX_WIDTH * canvas_width / 1080),
     )
     max_text_width = max_bar_width - horizontal_padding * 2
-    one_line_width = _title_line_width(normalized, base_style_size, TITLE_LETTER_SPACING, font_path)
+    one_line_width = _title_line_width(normalized, base_style_size, title_letter_spacing, font_path)
     minimum_bar_width = (
         round(canvas_width * LANDSCAPE_TITLE_BAR_MIN_WIDTH_RATIO)
         if canvas_width > canvas_height
@@ -517,7 +528,7 @@ def global_title_presentation(
         return GlobalTitlePresentation(
             normalized,
             base_style_size,
-            TITLE_LETTER_SPACING,
+            title_letter_spacing,
             max(minimum_bar_width, one_line_width + horizontal_padding * 2),
             bar_height,
         )
@@ -525,7 +536,7 @@ def global_title_presentation(
     lines = _balanced_title_lines(normalized, font_path)
     for half_steps in range(0, round((base_style_size - min_style_size) * 2) + 1):
         style_size = base_style_size - half_steps * 0.5
-        line_widths = [_title_line_width(line, style_size, 2, font_path) for line in lines if line]
+        line_widths = [_title_line_width(line, style_size, 0 if compact else 2, font_path) for line in lines if line]
         if line_widths and max(line_widths) <= max_text_width:
             font_size = round(style_size * 5.5)
             fitted_bar_height = max(
@@ -535,7 +546,7 @@ def global_title_presentation(
             return GlobalTitlePresentation(
                 "\n".join(line for line in lines if line),
                 style_size,
-                2,
+                0 if compact else 2,
                 max(minimum_bar_width, max(line_widths) + horizontal_padding * 2),
                 fitted_bar_height,
             )
@@ -592,7 +603,9 @@ def create_title_bar_asset(
     draw = ImageDraw.Draw(image)
     fill = (*tuple(round(channel * 255) for channel in parse_hex_color(background_color)), 255)
     if variant == "compact":
-        line_width = min(320, max(140, round(width * 0.38)))
+        # The compact underline is a title-length cue: longer titles get a
+        # visibly longer rule while short titles remain visually light.
+        line_width = max(96, min(round(canvas_width * 0.72), round(width * 0.82)))
         line_left = (canvas_width - line_width) // 2
         line_top = presentation.bar_height - COMPACT_TITLE_LINE_HEIGHT - 2
         draw.rounded_rectangle(
@@ -644,6 +657,7 @@ def make_global_title_segment(
             auto_wrapping=False,
             underline=variant != "compact",
             letter_spacing=presentation.letter_spacing,
+            line_spacing=0,
         ),
         clip_settings=draft.ClipSettings(transform_x=0.0, transform_y=transform_y),
         border=draft.TextBorder(alpha=0.0, width=0),
@@ -824,6 +838,7 @@ class JianyingRenderer:
         )
         if scene_backgrounds:
             script.add_track(draft.TrackType.video, SCENE_BACKGROUND_TRACK, relative_index=1)
+            previous_transition_resource_id = ""
             for background_index, element in enumerate(scene_backgrounds):
                 segment = self._make_segment(element, result)
                 if background_index + 1 < len(scene_backgrounds):
@@ -831,10 +846,16 @@ class JianyingRenderer:
                         SCENE_TRANSITION_DURATION_MS,
                         max(180, (element.end_ms - element.start_ms) // 4),
                     )
+                    transition = scene_transition_for_index(
+                        background_index,
+                        randomize=True,
+                        previous_resource_id=previous_transition_resource_id,
+                    )
                     segment.add_transition(
-                        scene_transition_for_index(background_index),
+                        transition,
                         duration=f"{duration_ms / 1000:.3f}s",
                     )
+                    previous_transition_resource_id = str(transition.value.resource_id)
                 script.add_segment(segment, SCENE_BACKGROUND_TRACK)
 
         foreground_elements = [element for element in result.elements if element.role != "background"]

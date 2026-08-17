@@ -89,6 +89,20 @@ class ImageGenerationTest(unittest.TestCase):
             self.assertAlmostEqual(background_content_bottom_ratio(output), 0.33, places=2)
             manifest = output.parent / "background_content_bounds.json"
             self.assertTrue(manifest.exists())
+
+    def test_background_content_bounds_ignores_canvas_frame(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "generated_assets_plus" / "s1_bg01.png"
+            output.parent.mkdir(parents=True)
+            image = Image.new("RGB", (100, 100), "white")
+            draw = ImageDraw.Draw(image)
+            draw.rectangle((0, 0, 99, 99), outline="#111111", width=2)
+            draw.line((10, 31, 90, 31), fill="#111111", width=2)
+            image.save(output)
+
+            record_background_content_bounds(output)
+
+            self.assertAlmostEqual(background_content_bottom_ratio(output), 0.33, places=2)
     def test_generated_image_is_saved_to_requested_asset_path(self):
         service = FakeVisualService()
         with tempfile.TemporaryDirectory() as directory:

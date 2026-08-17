@@ -9,7 +9,11 @@ from pathlib import Path
 
 from PIL import Image
 
-from ..application.portrait_package import PORTRAIT_PACKAGE_TITLE_CENTER_RATIO, build_portrait_package
+from ..application.portrait_package import (
+    PORTRAIT_PACKAGE_SUBTITLE_OFFSET_Y,
+    PORTRAIT_PACKAGE_TITLE_CENTER_RATIO,
+    build_portrait_package,
+)
 from ..layouts.regions import subtitle_area
 from ..renderers.jianying_renderer import title_transform_y
 
@@ -82,7 +86,7 @@ class PortraitPackageTest(unittest.TestCase):
             subtitles = [element for element in result.layout.elements if element.role == "subtitle"]
             self.assertEqual([element.content for element in subtitles], ["The packaged subtitle"])
             self.assertTrue(all(
-                element.box.center_y == subtitle_area(result.layout.canvas).center_y
+                element.box.center_y == subtitle_area(result.layout.canvas).center_y + PORTRAIT_PACKAGE_SUBTITLE_OFFSET_Y
                 for element in subtitles
             ))
             title_track = tracks["global_title"]

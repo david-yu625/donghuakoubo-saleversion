@@ -5,8 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..core.models import LayoutResult, Theme, canvas_for_orientation
+from ..core.models import Box, LayoutResult, Theme, canvas_for_orientation
 from ..layouts.engine import LayoutEngine
+from ..layouts.regions import subtitle_area
 from ..paths import portrait_package_dir
 from ..pipeline.project_reader import read_copy_lines, read_subtitles
 from ..prepare import ensure_project_background
@@ -22,6 +23,7 @@ PORTRAIT_PACKAGE_VIDEO_ROUND_CORNER = 10.0
 PORTRAIT_PACKAGE_VIDEO_SCALE = 1.15
 PORTRAIT_PACKAGE_TITLE_CENTER_RATIO = 0.27
 PORTRAIT_PACKAGE_TITLE_FONT = "ResourceHanRoundedCN_Bold"
+PORTRAIT_PACKAGE_SUBTITLE_OFFSET_Y = -72
 
 
 @dataclass(frozen=True)
@@ -67,9 +69,17 @@ def build_portrait_package(
             read_subtitles(timeline_path, read_copy_lines(project_dir / "wenan.txt")),
             project_title,
         )
+    subtitle_box = subtitle_area(canvas)
+    subtitle_box = Box(
+        subtitle_box.x,
+        subtitle_box.y + PORTRAIT_PACKAGE_SUBTITLE_OFFSET_Y,
+        subtitle_box.width,
+        subtitle_box.height,
+    )
     elements = build_subtitle_elements(
         subtitle_rows,
         engine,
+        box=subtitle_box,
     )
     layout = LayoutResult(
         template="portrait_package",
