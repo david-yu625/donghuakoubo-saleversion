@@ -1,0 +1,10 @@
+{
+  "title": "一张新图片进入，旧图片自动退到历史区",
+  "images": [
+    "mg_asset_library/images/characters/char_host_explaining.png",
+    "mg_asset_library/images/characters/char_host_question.png",
+    "mg_asset_library/images/props/prop_calculator.png",
+    "mg_asset_library/images/icons/icon_check.png"
+  ],
+  "duration_ms": 5000
+}
