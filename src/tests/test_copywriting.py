@@ -11,35 +11,43 @@ copywriting = importlib.import_module("src.01_generate_copywriting")
 
 class CopywritingResponseTest(unittest.TestCase):
     def test_prompt_is_general_purpose_and_preserves_topic_domain(self):
-        self.assertIn("短视频科普口播文案作者", copywriting.SYSTEM_PROMPT)
-        self.assertIn("输入是什么、经过哪些处理、输出怎样变化", copywriting.SYSTEM_PROMPT)
-        self.assertIn("场景遇到什么问题、能观察到什么信号", copywriting.SYSTEM_PROMPT)
-        self.assertIn("目标、阻碍、关键选择、转折和结果", copywriting.SYSTEM_PROMPT)
-        self.assertIn("不要强行制造反常识、两次转折或戏剧冲突", copywriting.SYSTEM_PROMPT)
-        self.assertNotIn("每隔 3~5 行必须发生一次推进", copywriting.SYSTEM_PROMPT)
-        self.assertNotIn("至少两次转折", copywriting.SYSTEM_PROMPT)
-        self.assertNotIn("全文同类句式最多出现一次", copywriting.SYSTEM_PROMPT)
-        self.assertIn("具体对象、过程或事件", copywriting.retention_guidance())
-        self.assertIn("不强行制造反常识", copywriting.retention_guidance())
-
-    def test_automatic_story_mode_does_not_force_a_named_story(self):
-        guidance = copywriting.story_world_guidance("自动选择", "大模型如何生成文字")
-        self.assertIn("根据题目本身选择最自然的表达", guidance)
-        self.assertNotIn("以自动选择故事讲", guidance)
-        self.assertNotIn("技术点", guidance)
-
-        mythology = copywriting.story_world_guidance("", "八仙过海")
-        self.assertIn("围绕题目本身展开", mythology)
-        self.assertNotIn("CPU", mythology)
-
-        explicit = copywriting.story_world_guidance("快递站", "TCP 为什么可靠")
-        self.assertIn("以快递站故事讲TCP 为什么可靠", explicit)
-        self.assertIn("服务于当前主题", explicit)
+        self.assertIn("计算机资深从业者", copywriting.SYSTEM_PROMPT)
+        self.assertIn("开头必须抛异常或者问题", copywriting.SYSTEM_PROMPT)
+        self.assertIn("持续持续持续输出高密度价值信息", copywriting.SYSTEM_PROMPT)
+        self.assertNotIn("每句话采用6到15个字", copywriting.SYSTEM_PROMPT)
+        self.assertNotIn("结尾留钩子和悬念", copywriting.SYSTEM_PROMPT)
+        self.assertIn("不需要做其他的分镜头设计", copywriting.SYSTEM_PROMPT)
+        self.assertIn("不要虚构作者身份、账号名称", copywriting.SYSTEM_PROMPT)
+        self.assertIn("不要在文案中自称", copywriting.SYSTEM_PROMPT)
+        self.assertIn("每句话必须新增事实、因果或解释", copywriting.SYSTEM_PROMPT)
+        self.assertIn("同一个问题只问一次", copywriting.SYSTEM_PROMPT)
+        self.assertIn("结尾不要复述全文", copywriting.SYSTEM_PROMPT)
+        self.assertIn("#文案框架", copywriting.SYSTEM_PROMPT)
+        self.assertIn("题意锁定", copywriting.SYSTEM_PROMPT)
+        self.assertIn("不能只抓其中一个关键词", copywriting.SYSTEM_PROMPT)
+        self.assertIn("题型互相替换", copywriting.SYSTEM_PROMPT)
+        self.assertIn("核心答案", copywriting.SYSTEM_PROMPT)
+        self.assertIn("原因—关键过程—结果或影响", copywriting.SYSTEM_PROMPT)
+        self.assertIn("不中途换题", copywriting.SYSTEM_PROMPT)
+        self.assertIn("禁止虚构“大家都说”", copywriting.SYSTEM_PROMPT)
+        self.assertIn("禁止强行反差、文字游戏", copywriting.SYSTEM_PROMPT)
+        self.assertIn("如果正文不能直接回答", copywriting.SYSTEM_PROMPT)
+        self.assertIn("#背景", copywriting.SYSTEM_PROMPT)
+        self.assertIn("#目标", copywriting.SYSTEM_PROMPT)
+        self.assertIn("#要求", copywriting.SYSTEM_PROMPT)
+        self.assertNotIn("***", copywriting.SYSTEM_PROMPT)
+        self.assertIn("#程序输出", copywriting.OUTPUT_PROTOCOL_PROMPT)
 
     def test_valid_json_and_code_fence(self):
         self.assertEqual(copywriting.parse_copywriting_payload('{"wenan":"标题\\n正文"}')["wenan"], "标题\n正文")
         fenced = '```json\n{"wenan":"标题\\n正文"}\n```'
         self.assertEqual(copywriting.parse_copywriting_payload(fenced)["wenan"], "标题\n正文")
+
+    def test_system_prompt_receives_current_topic_in_initialization(self):
+        prompt = copywriting.build_system_prompt("计算机起源")
+        self.assertIn("#初始化", prompt)
+        self.assertIn("我要讲解的题目是“计算机起源”。", prompt)
+        self.assertNotIn("***", prompt)
 
     def test_repairs_raw_newlines_and_unescaped_quotes(self):
         malformed = '{"wenan":"什么是知识传递\n老师说"知识传递"很重要\n学生点头"}'
@@ -65,16 +73,25 @@ class CopywritingResponseTest(unittest.TestCase):
             )
         self.assertIn("第一层", payload["wenan"])
         self.assertEqual(client.chat.completions.create.call_count, 2)
-        first_prompt = client.chat.completions.create.call_args_list[0].kwargs["messages"][1]["content"]
-        self.assertIn("本次创作硬约束", first_prompt)
-        self.assertIn("具体对象、过程或事件", first_prompt)
+        first_messages = client.chat.completions.create.call_args_list[0].kwargs["messages"]
+        first_prompt = first_messages[-1]["content"]
+        self.assertIn("我要讲解的题目是“测试”。", first_messages[0]["content"])
+        self.assertNotIn("我要讲解的题目是“***”。", first_messages[0]["content"])
+        self.assertIn("文案最长不超过 100 个有效字", first_prompt)
+        self.assertIn("不是最低字数", first_prompt)
+        self.assertIn("#字数要求", first_prompt)
         self.assertNotIn("至少两次转折", first_prompt)
 
-    def test_single_line_copy_is_rewritten_as_layered_lines(self):
-        responses = [
-            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"wenan":"标题，现象，原因，机制，结果"}'))]),
-            SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"wenan":"标题\\n具体现象\\n信息缺口\\n直接原因\\n更深机制\\n可见结果"}'))]),
-        ]
+    def test_length_guidance_is_sectioned_when_target_is_omitted(self):
+        self.assertTrue(copywriting.length_guidance(0).startswith("#字数要求\n"))
+        self.assertNotIn("6~15", copywriting.length_guidance(0))
+        self.assertNotIn("建议输出", copywriting.length_guidance(250))
+        self.assertIn("不是最低字数", copywriting.length_guidance(500))
+        self.assertIn("通常以 350~450 字为合适篇幅", copywriting.length_guidance(500))
+        self.assertIn("信息量大的主题可以写到接近 500 字", copywriting.length_guidance(500))
+
+    def test_single_line_copy_is_saved_without_validation_retry(self):
+        responses = [SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"wenan":"标题，现象，原因，机制，结果"}'))])]
         client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=Mock(side_effect=responses))))
         with patch.object(copywriting, "OpenAI", return_value=client):
             payload = copywriting.generate_copywriting(
@@ -88,8 +105,9 @@ class CopywritingResponseTest(unittest.TestCase):
                 story_world="",
             )
 
-        self.assertEqual(len(payload["wenan"].splitlines()), 6)
-        self.assertEqual(client.chat.completions.create.call_count, 2)
+        self.assertEqual(payload["wenan"], "标题，现象，原因，机制，结果")
+        self.assertNotIn("_validation_warning", payload)
+        self.assertEqual(client.chat.completions.create.call_count, 1)
 
 
 if __name__ == "__main__":

@@ -24,11 +24,15 @@ TOPIC_SYSTEM_PROMPT = """
 好选题必须满足：
 - 能回答一个明确问题，而不是“介绍某某领域”或“盘点几个方向”。
 - 能讲清一个真实机制、判断方法、常见误区、失败原因或具体因果链。
-- 普通观众能在工作、学习、生活或使用软件时遇到，或者能通过一个小实验或操作验证。
+- 来自普通用户在工作、学习、生活或使用软件时会遇到的任务、故障、选择或困惑。
+- 用户看完后能立刻获得实际帮助：完成一项操作、解决一个问题、作出更好的选择、避开一个风险、提高效率，或理解异常现象后知道下一步怎么做。
+- 即使讲概念或底层机制，也必须落到一个可执行的判断、操作建议或验证方法，不能只增加知识而不解决问题。
 - 标题具体、自然、不过度夸张；可以使用问题句，但不要机械套格式。
 - 避开历史记录中已经生成或使用过的主题，也避开只是替换名词、换一种问法但仍回答同一个核心问题的主题。
 
-不要生成：泛泛的行业趋势、励志观点、纯产品宣传、没有可解释机制的热点、需要实时数据才能成立的结论、和历史主题同义的换皮标题。
+不要生成：泛泛的行业趋势、纯概念介绍、百科定义、励志观点、纯产品宣传、没有可解释机制的热点、需要实时数据才能成立的结论、和历史主题同义的换皮标题。
+
+输出前请在内部自检：这个主题面向谁、会在什么具体场景遇到什么问题、看完后能采取什么行动。任一项说不清就重新选题，不要输出自检过程。
 
 只输出严格 JSON：{"topic":"一个主题"}
 """.strip()
@@ -123,6 +127,7 @@ def _parse_topic(value: str) -> str:
 
 def generate_unique_topic(
     *,
+    direction: str = "",
     api_key: str = "",
     model: str = DEFAULT_MODEL,
     base_url: str = DEFAULT_BASE_URL,
@@ -131,6 +136,9 @@ def generate_unique_topic(
     max_attempts: int = 4,
 ) -> str:
     load_env_file(PROJECT_ROOT / ".env")
+    direction = direction.strip()
+    if len(direction) > 200:
+        raise ValueError("选题方向不能超过 200 个字符")
     key = api_key or os.getenv("DEEPSEEK_API_KEY", "")
     if not key:
         raise ValueError("缺少 DEEPSEEK_API_KEY")
@@ -138,10 +146,19 @@ def generate_unique_topic(
     client = OpenAI(api_key=key, base_url=base_url or os.getenv("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL))
     used_keys = {topic_comparison_key(item) for item in used}
     history = "\n".join(f"- {topic}" for topic in used[-300:]) or "（暂无历史主题）"
+    direction_prompt = (
+        f"用户指定的选题大方向是：{direction}\n"
+        "新主题必须直接属于这个方向，并下钻到一个具体概念、机制、操作细节、判断方法、常见误区或失败原因。\n"
+        "优先选择用户真实会遇到、看完后能解决问题或立即采取行动的细节，不要只做知识介绍。\n"
+        "不要把大方向本身当作主题，不要扩展到无关领域；标题中应能看出它与该方向的直接关系。\n\n"
+        if direction
+        else "优先选择计算机或科技领域中能讲清具体机制、真实场景和判断方法的问题。\n\n"
+    )
     user_prompt = (
-        "请提出一个新主题。以下主题已经生成过或使用过，不能重复，也不能只换同义词：\n"
+        direction_prompt
+        + "请提出一个新主题。以下主题已经生成过或使用过，不能重复，也不能只换同义词：\n"
         + history
-        + "\n\n优先选择能讲清具体机制、真实场景和判断方法的计算机或科技主题；如果历史中已有相近主题，请换到不同问题。"
+        + "\n\n如果历史中已有相近主题，请改讲这个方向下的另一个具体问题。"
     )
     for _ in range(max_attempts):
         response = client.chat.completions.create(

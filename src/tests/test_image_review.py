@@ -41,6 +41,7 @@ class ImageReviewTest(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0].element_id, "s1_img01")
         self.assertEqual(items[0].original_path, original)
+        self.assertTrue(items[0].is_failed)
 
     def test_selected_rows_preserve_csv_order(self):
         rows = [

@@ -21,28 +21,37 @@ DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEFAULT_CHAR_BUDGET = 18000
 
 SYSTEM_PROMPT = """
-你是短视频科普口播文案作者。你的任务不是把题目说得漂亮，而是让观众看完后能复述：对象是什么、它怎么工作、为什么会这样，以及自己如何判断或使用。
+#背景
+1.你是一名计算机资深从业者，从事多年软件技术研发。
+2.现在想做抖音自媒体短视频。通过将计算机无聊的知识以专业但简易的方式讲出来。
 
-先做一次内部取舍：本条只回答一个具体问题，确定一个结论；题目太大就主动缩小范围。不要输出取舍过程。
+#目标
+ 需要你根据主题帮我生成文案。
 
-写作内容必须优先提供事实和机制：
-- 技术、科学、工具类：用一个具体场景贯穿，写清输入是什么、经过哪些处理、输出怎样变化；第一次出现术语先用日常话解释，再给正式名称。
-- 实用、职场、商业类：写清谁在什么场景遇到什么问题、能观察到什么信号、按什么条件做什么动作，以及动作后的结果。
-- 历史、人物、故事类：写清人物或事件的目标、阻碍、关键选择、转折和结果；区分史实、传说和不确定说法。
-- 不确定的事实、数字、价格、版本或性能不要编造；资料不足时明确范围，不用绝对结论填空。
+#要求
+1.开头必须抛异常或者问题，要开门见山，直指主题
+2.持续持续持续输出高密度价值信息，防止滑走。
+3.拒绝废话。
+4.文案要符合自媒体文案的特点，开头吸引人，信息密度高。
+5.行文思路要有逻辑，一步一步递进式讲解，也可以分类说明，千万不可以杂乱无章。
+6.不需要做其他的分镜头设计，只需要将最终的文案以一段话的形式输出给我就行。
+7.要有一点口播感，千万别啰嗦。
+8.不要虚构作者身份、账号名称、人物称呼或关注引导。用户没有提供身份信息时，不要在文案中自称。
+9.每句话必须新增事实、因果或解释。同一个问题只问一次，同一个比喻只用一次，同一个结论只说一次。结尾不要复述全文；删掉后不影响理解的句子必须删除。
 
-正文按“具体问题或结果 -> 关键缺口 -> 机制或事件推进 -> 例子/边界 -> 可验证结论”展开。相邻两行要有因果或承接关系，但不要为了制造悬念故意隐藏一句话就能说清的事实。抽象判断后面必须紧跟对象、动作、例子、结果或判断标准。比喻只有在能降低理解难度时才使用，最多一个，并且不能替代主题本身。
+#文案框架
+0.题意锁定：先识别完整题目及其问题类型，保留题目中的所有关键限定。不能只抓其中一个关键词，也不能把起源、原理、用途、比较、操作等题型互相替换。
+1.开头：只提出一个真实、自然并且与当前主题直接相关的问题或异常现象。禁止虚构“大家都说”之类的前提，禁止强行反差、文字游戏和生造概念。
+2.核心答案：紧接着用一句话正面回答开头，明确这篇文案要讲清的核心结论；如果正文不能直接回答，必须重新设计开头。
+3.递进展开：只沿一条主线，按照“原因—关键过程—结果或影响”逐层讲解。
+4.事实支撑：事实、例子和数据只用于解释主线，不扩展无关知识点，不中途换题。
+5.结尾：回答开头的问题，给观众留下一个明确的新认识，不重复正文，不添加口号。
+""".strip()
 
-删除以下内容：时代背景套话、空泛评价、正确但不能执行的建议、同义重复、没有新增事实的金句、点赞关注话术，以及连续堆砌的并列知识点。不要强行制造反常识、两次转折或戏剧冲突。
-
-分行服务于语义和 TTS：一行表达一个完整动作或因果，不要把一句话拆成多个空短句。250 字左右通常写 10~16 行；目标字数变化时按信息完整度调整，不为凑行数重复。
-
-自检后再输出：删掉任意一句后，若信息、因果或判断没有损失，就删掉它。全文至少包含一个具体对象、一个具体过程或事件、一个结果；适用时还要包含一个可观察信号和一个可执行动作。
-
-输出严格 JSON，不要输出解释、Markdown 或额外字段：
-{
-  "wenan": "标题\n第一句\n第二句"
-}
+OUTPUT_PROTOCOL_PROMPT = """
+#程序输出
+程序需要可解析的 JSON，只输出以下对象，不要输出解释、Markdown 或分镜：
+{"wenan":"完整文案"}
 """.strip()
 
 
@@ -52,7 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-o", "--output", type=Path, help="默认 output/<topic>/wenan.txt")
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--reference", type=Path, default=DEFAULT_REFERENCE, help="参考样例文件或目录；默认读取 copywriting_style_reference.md")
-    parser.add_argument("--target-chars", type=int, default=0, help="目标文案字数，按中文字数量估算；0 表示不指定。")
+    parser.add_argument("--target-chars", type=int, default=500, help="文案最长字数；0 表示不限制。")
     parser.add_argument("--story-world", default="", help="可选故事载体，例如快递站、图书馆、工厂、餐馆；留空或填写自动选择时由模型判断是否需要。")
     parser.add_argument("--api-key", default="", help="默认读取 DEEPSEEK_API_KEY")
     parser.add_argument("--model", default="", help=f"默认读取 DEEPSEEK_MODEL 或 {DEFAULT_MODEL}")
@@ -102,21 +111,14 @@ def generate_copywriting(
     if not api_key:
         raise ValueError("缺少 DEEPSEEK_API_KEY")
     client = OpenAI(api_key=api_key, base_url=base_url)
-    user_prompt = "\n".join([
-        f"题目：{topic}",
-        story_world_guidance(story_world, topic),
-        "",
-        length_guidance(target_chars),
-        "",
-        retention_guidance(),
-        "",
-        "参考样例和拆解：",
-        reference,
-    ])
+    del reference, story_world
+    system_prompt = build_system_prompt(topic)
+    user_prompt = length_guidance(target_chars)
     response = client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": OUTPUT_PROTOCOL_PROMPT},
             {"role": "user", "content": user_prompt},
         ],
         response_format={"type": "json_object"},
@@ -143,41 +145,18 @@ def generate_copywriting(
             payload = parse_copywriting_payload(repaired_content)
         except ValueError as exc:
             raise RuntimeError("模型连续返回无法解析的文案 JSON，请重试") from exc
-    try:
-        validate_copywriting_text(str(payload["wenan"]), target_chars)
-    except ValueError as validation_error:
-        rewrite_response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-                {"role": "assistant", "content": raw_content},
-                {
-                    "role": "user",
-                    "content": (
-                        f"上一版文案未通过结构校验：{validation_error}\n"
-                        "请重写完整文案。保留具体对象、过程、结果和判断依据；每行保持语义完整，并输出严格 JSON。"
-                    ),
-                },
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=max_tokens,
-        )
-        try:
-            payload = parse_copywriting_payload(rewrite_response.choices[0].message.content or "")
-            validate_copywriting_text(str(payload["wenan"]), target_chars)
-        except ValueError as exc:
-            raise RuntimeError("模型连续返回不符合逐层展开要求的文案，请重试") from exc
+    payload["wenan"] = clean_wenan(str(payload["wenan"]))
     return payload
 
 
-def validate_copywriting_text(text: str, target_chars: int = 0) -> None:
-    lines = [line.strip() for line in clean_wenan(text).splitlines() if line.strip()]
-    minimum_lines = 3 if 0 < target_chars < 60 else 6
-    if len(lines) < minimum_lines:
-        raise ValueError(f"文案必须至少拆成 {minimum_lines} 行，不能把多层内容塞在一行")
-    if len(set(lines)) != len(lines):
-        raise ValueError("文案包含重复行")
+def build_system_prompt(topic: str) -> str:
+    """Insert the active topic into the initialization section sent to the model."""
+
+    return "\n\n".join([
+        SYSTEM_PROMPT,
+        "#初始化",
+        f"    1.我要讲解的题目是“{topic}”。",
+    ])
 
 
 def parse_copywriting_payload(raw_content: str) -> dict[str, object]:
@@ -257,44 +236,17 @@ def next_non_space_character(value: str, start: int) -> str:
 
 def length_guidance(target_chars: int) -> str:
     if target_chars > 0:
-        min_chars = max(40, round(target_chars * 0.88))
-        max_chars = max(min_chars, round(target_chars * 1.12))
-        # Keep semantic sentences intact. Around 16-22 Chinese characters per
-        # line is more useful than forcing one short fragment per subtitle.
-        target_lines = max(6, min(60, round(target_chars / 18)))
-        min_lines = max(6, round(target_lines * 0.85))
-        max_lines = max(min_lines, round(target_lines * 1.15))
+        normal_min = max(1, round(target_chars * 0.7))
+        normal_max = max(normal_min, round(target_chars * 0.9))
         return (
-            f"目标文案字数：约 {target_chars} 个中文字。\n"
-            f"请按这个字数控制文案总量，而不是按参考 demo 的长度。\n"
-            f"建议输出 {min_lines}~{max_lines} 行，全文约 {min_chars}~{max_chars} 个中文字。\n"
-            "宁可少一点，也不要为了凑字数写废话。"
-        )
-    return "目标文案字数：未指定。请按信息完整度生成约 12~20 行，不要用短句或重复内容凑长度。"
-
-
-def retention_guidance() -> str:
-    return (
-        "本次创作硬约束：\n"
-        "只回答一个具体问题，正文必须给出具体对象、过程或事件，以及可见结果。\n"
-        "技术和科学主题写清输入、处理、输出和一个边界；实用主题写清场景、观察信号、动作和判断条件；故事主题写清目标、阻碍、转折和结果。\n"
-        "每一行都要新增事实、动作、因果、例子或判断依据；删掉不能影响理解的句子。\n"
-        "不强行制造反常识、悬念或转折，不写空泛建议、重复总结和营销话术。"
-    )
-
-
-def story_world_guidance(story_world: str, topic: str) -> str:
-    value = story_world.strip()
-    if value and value not in {"自动选择", "自动", "通用故事"}:
-        return (
-            f"故事载体：{value}\n"
-            f"请把文案规划成“以{value}故事讲{topic}”。\n"
-            "要求：故事中的人物、地点、道具和冲突都服务于当前主题；不要引入与题目无关的领域概念。"
+            f"#字数要求\n文案最长不超过 {target_chars} 个有效字（中文、英文和数字，不计标点空白）。\n"
+            f"通常以 {normal_min}~{normal_max} 字为合适篇幅；信息量大的主题可以写到接近 {target_chars} 字，"
+            "只有内容简单的主题才明显缩短。"
+            "这只是篇幅参考，不是最低字数；内容讲清楚后立即结束，不要为了接近上限补充废话。"
         )
     return (
-        "故事载体：未指定。\n"
-        "请根据题目本身选择最自然的表达：故事和人物题材直接讲事件，知识题材解释事实与原因，操作题材讲清步骤和结果。\n"
-        "围绕题目本身展开，不要主动套用其他领域的比喻；确有必要时最多使用一个主要比喻，并及时回到主题。"
+        "#字数要求\n"
+        "未设置最长字数。按信息完整度自然展开，不要用重复内容凑长度。"
     )
 
 

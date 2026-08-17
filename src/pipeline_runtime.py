@@ -14,11 +14,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .core.models import orientation_key
-from .paths import default_draft_folder
+from .paths import default_draft_folder, resolve_draft_folder
 from .prepare.image_generation import (
     DEFAULT_IMAGE_BASE_URL,
     DEFAULT_IMAGE_MODEL,
     IMAGE_MODEL_CHOICES,
+    is_valid_image_file,
 )
 from .prepare.voice_timeline import DEFAULT_TTS_SPEAKER
 from .prepare.topic_generation import record_topic
@@ -138,7 +139,7 @@ STEP_DEFS = [
     ("shots", "03 分镜", "shot_timeline_source_time.csv", "划分语义分镜", "查看分镜"),
     ("storyboard_prompts", "04 图片内容", "storyboard_prompts.csv", "扩展图片内容", "查看图片内容"),
     ("prompts", "05 生图提示词", "image_prompts_plus.csv", "生成生图提示词", "查看生图提示词"),
-    ("images", "06 图片", "generated_assets_plus", "生成真实图片", "查看并修改图片"),
+    ("images", "06 图片", "generated_assets_plus", "重新生成图片", "查看并修改图片"),
     ("layout", "07 布局", "layout_result.json", "编译画面布局", ""),
     ("draft", "08 草稿", "", "生成剪映草稿", ""),
 ]
@@ -417,7 +418,7 @@ def _images_complete(prompt_csv: Path) -> bool:
         if not asset.is_absolute():
             asset = PROJECT_ROOT / asset
         try:
-            if not asset.is_file() or asset.stat().st_mtime_ns < prompt_time:
+            if not is_valid_image_file(asset) or asset.stat().st_mtime_ns < prompt_time:
                 return False
         except OSError:
             return False
@@ -502,8 +503,8 @@ def build_commands(options: Options) -> tuple[list[tuple[str, list[str]]], Path]
         raise ValueError("主题不能为空")
     target_chars = options.target_chars.strip() or "0"
     if not target_chars.isdigit():
-        raise ValueError("目标字数必须是非负整数")
-    draft_folder = options.draft_folder.strip() or str(default_draft_folder())
+        raise ValueError("最长字数必须是非负整数")
+    draft_folder = str(resolve_draft_folder(options.draft_folder))
     topic_dir = OUTPUT_ROOT / safe_topic(topic) / orientation_key(options.orientation)
     wenan = topic_dir / "wenan.txt"
     shot_csv = topic_dir / "shot_timeline_source_time.csv"
@@ -651,10 +652,6 @@ def build_commands(options: Options) -> tuple[list[tuple[str, list[str]]], Path]
     return commands, topic_dir
 
 
-def theme_environment_values(value: str) -> dict[str, str]:
-    return {"VISUAL_THEME": resolve_visual_theme(value).key}
-
-
 def build_image_regeneration_command(
     prompt_csv: Path,
     element_ids: list[str],
@@ -662,6 +659,7 @@ def build_image_regeneration_command(
     image_model: str,
     image_quality: str,
     visual_theme: str,
+    overwrite: bool = True,
 ) -> list[str]:
     selected = [element_id.strip() for element_id in element_ids if element_id.strip()]
     if not selected:
@@ -677,8 +675,9 @@ def build_image_regeneration_command(
         image_quality.strip(),
         "--theme",
         resolve_visual_theme(visual_theme).key,
-        "--overwrite",
     ]
+    if overwrite:
+        command.append("--overwrite")
     for element_id in selected:
         command.extend(["--element-id", element_id])
     return command
@@ -707,7 +706,7 @@ def build_portrait_package_command(
         "--title",
         project_title.strip(),
         "--draft-folder",
-        draft_folder.strip() or str(default_draft_folder()),
+        str(resolve_draft_folder(draft_folder)),
         "--draft-name",
         draft_name.strip() or "portrait_package",
         "--theme",

@@ -112,6 +112,18 @@ def original_image_path(output_path: Path) -> Path:
     return output_path.parent / ORIGINALS_FOLDER_NAME / output_path.name
 
 
+def is_valid_image_file(path: Path) -> bool:
+    """Return whether a generated asset is a readable, non-empty image."""
+    try:
+        if not path.is_file() or path.stat().st_size <= 0:
+            return False
+        with Image.open(path) as image:
+            image.verify()
+    except (OSError, SyntaxError, ValueError):
+        return False
+    return True
+
+
 def resolve_image_model(value: str = "") -> str:
     return (
         value.strip()

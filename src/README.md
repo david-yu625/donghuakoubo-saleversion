@@ -139,7 +139,7 @@ src 使用说明
 
 3. prepare 阶段
 - 01_generate_copywriting.py (entry; implementation in prepare/copywriting.py)
-  - 输入：主题、故事载体、目标字数
+  - 输入：主题、故事载体、最长字数
   - 输出：wenan.txt
   - 围绕一个中心问题组织“总论点 -> 四个大点 -> 每个大点的细节”，保证内容能逐层讲清
 - 02_generate_voice_timeline.py (entry; implementation in prepare/voice_timeline.py)

@@ -7,6 +7,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from PIL import Image
+
 from ..pipeline_runtime import (
     Options,
     Runner,
@@ -46,7 +48,9 @@ class GuiPipelineTest(unittest.TestCase):
             if key == "prompts":
                 content = f"element_id,shot_id,role,content,width,height,asset_path,prompt\ns1_bg01,1,background,x,1920,1080,{path.parent / 'generated_assets_plus' / 's1_bg01.png'},x\n"
                 path.write_text(content, encoding="utf-8")
-            elif path.suffix == ".png" or path.suffix == ".wav":
+            elif path.suffix == ".png":
+                Image.new("RGB", (16, 16), "white").save(path)
+            elif path.suffix == ".wav":
                 path.write_bytes(b"asset")
             else:
                 path.write_text("content\n", encoding="utf-8")
@@ -328,6 +332,18 @@ class GuiPipelineTest(unittest.TestCase):
         image_command = next(command for label, command in commands if label == "06 图片")
         self.assertIn("--overwrite", image_command)
 
+    def test_failed_image_retry_command_keeps_existing_assets(self):
+        command = build_image_regeneration_command(
+            Path("output/topic/image_prompts_plus.csv"),
+            ["s1_img01"],
+            image_model="gpt-image-2",
+            image_quality="low",
+            visual_theme="white",
+            overwrite=False,
+        )
+
+        self.assertNotIn("--overwrite", command)
+
     def test_portrait_and_landscape_use_isolated_project_roots_and_drafts(self):
         portrait_commands, portrait_dir = build_commands(Options(
             topic="同一主题",
@@ -373,7 +389,7 @@ class GuiPipelineTest(unittest.TestCase):
     def test_invalid_topic_and_target_chars_are_rejected(self):
         with self.assertRaisesRegex(ValueError, "主题不能为空"):
             build_commands(Options(topic=" ", story_world="", target_chars="0"))
-        with self.assertRaisesRegex(ValueError, "目标字数"):
+        with self.assertRaisesRegex(ValueError, "最长字数"):
             build_commands(Options(topic="测试", story_world="", target_chars="abc"))
 
     def test_selected_mp3_or_mp4_is_passed_to_draft_command(self):
@@ -437,8 +453,8 @@ class GuiPipelineTest(unittest.TestCase):
             topic="test",
             story_world="",
             target_chars="0",
-            background_image="/Users/a1234/Desktop/old/donghuakoubo/picturies/background/background_2.png",
-            background_music="/Users/a1234/Desktop/old/donghuakoubo/audio/bgm/bgm1.mp4",
+            background_image="/Users/tester/Desktop/old/donghuakoubo/picturies/background/background_2.png",
+            background_music="/Users/tester/Desktop/old/donghuakoubo/audio/bgm/bgm1.mp4",
         ))
         draft_command = next(command for label, command in commands if label == "08 草稿")
 

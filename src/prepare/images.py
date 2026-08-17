@@ -17,6 +17,7 @@ from .image_generation import (
     DEFAULT_IMAGE_MODEL,
     flatten_white_background,
     generate_image,
+    is_valid_image_file,
     original_image_path,
     resolve_image_model,
 )
@@ -68,7 +69,7 @@ def main() -> int:
             output = Path(row["asset_path"]).expanduser()
             if not output.is_absolute():
                 output = (PROJECT_ROOT / output).resolve()
-            if output.exists() and not args.overwrite:
+            if is_valid_image_file(output) and not args.overwrite:
                 print(f"[{index}/{len(rows)}] 已存在，跳过：{output}")
                 continue
             if row["role"] in {"overview_diagram", "subpoint_diagram"}:

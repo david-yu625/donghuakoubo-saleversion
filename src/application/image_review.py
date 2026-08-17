@@ -6,7 +6,7 @@ import csv
 from dataclasses import dataclass
 from pathlib import Path
 
-from ..prepare.image_generation import original_image_path
+from ..prepare.image_generation import is_valid_image_file, original_image_path
 from ..prepare.image_prompts import PROMPT_FIELDS
 
 
@@ -16,6 +16,10 @@ class ImageReviewItem:
     content: str
     asset_path: Path
     original_path: Path
+
+    @property
+    def is_failed(self) -> bool:
+        return not is_valid_image_file(self.asset_path)
 
 
 def load_image_review_items(prompt_csv: Path, project_root: Path) -> list[ImageReviewItem]:

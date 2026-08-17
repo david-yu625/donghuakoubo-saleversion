@@ -14,6 +14,7 @@
 ├── output/              用户项目与生成结果
 ├── vendor/              pyJianYingDraft 依赖源码
 ├── .env                 本地接口配置
+├── settings.json        本地生成与导出设置
 ├── start_pipeline_app.command
 └── start_pipeline_app.bat
 ```
@@ -28,7 +29,7 @@
 python3 -m pip install -r requirements.txt
 ```
 
-系统还需要可执行的 `ffmpeg` 和 `ffprobe`。首次配置时复制 `.env.example` 为 `.env` 并填写密钥；`.env` 已被忽略，不应进入发布包。
+系统还需要可执行的 `ffmpeg` 和 `ffprobe`。首次配置时复制 `.env.example` 为 `.env` 并填写密钥；`.env` 已被忽略，不应进入发布包。视觉、字体、颜色、背景、草稿目录和视频方向保存在同样被忽略的 `settings.json`，由应用设置页维护。
 
 图片生成支持在客户端选择模型。`jimeng_*` 使用火山引擎凭据；`gpt-image-2` 等其他模型使用 `IMAGE_API_KEY` 和 `IMAGE_BASE_URL` 指向 OpenAI 兼容 Images API。
 

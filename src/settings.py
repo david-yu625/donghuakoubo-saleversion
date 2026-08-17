@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .app_settings import APP_SETTINGS_PATH, load_app_settings
+
 
 DEFAULT_VISUAL_THEME = "white"
 VISUAL_THEME_CHOICES = ("白色主题",)
@@ -59,8 +61,18 @@ class RenderSettings:
     subtitle_background_color: str = DEFAULT_SUBTITLE_BACKGROUND_COLOR
 
 
-def resolve_visual_theme(value: str = "") -> VisualThemeProfile:
-    selected = value.strip() or os.getenv("VISUAL_THEME", "").strip() or DEFAULT_VISUAL_THEME
+def resolve_visual_theme(
+    value: str = "",
+    *,
+    settings_path: Path = APP_SETTINGS_PATH,
+) -> VisualThemeProfile:
+    saved = load_app_settings(settings_path)
+    selected = (
+        value.strip()
+        or saved.get("VISUAL_THEME", "").strip()
+        or os.getenv("VISUAL_THEME", "").strip()
+        or DEFAULT_VISUAL_THEME
+    )
     selected_lower = selected.lower()
     for profile in VISUAL_THEMES.values():
         if selected_lower == profile.key or selected == profile.label:
@@ -68,40 +80,64 @@ def resolve_visual_theme(value: str = "") -> VisualThemeProfile:
     return VISUAL_THEMES[DEFAULT_VISUAL_THEME]
 
 
-def load_render_settings(visual_theme: str = "") -> RenderSettings:
-    theme = resolve_visual_theme(visual_theme)
-    environment_theme = resolve_visual_theme(os.getenv("VISUAL_THEME", ""))
-    use_color_overrides = not visual_theme.strip() or environment_theme.key == theme.key
+def load_render_settings(
+    visual_theme: str = "",
+    *,
+    settings_path: Path = APP_SETTINGS_PATH,
+) -> RenderSettings:
+    saved = load_app_settings(settings_path)
+    saved_theme_value = saved.get("VISUAL_THEME", "") or os.getenv("VISUAL_THEME", "")
+    theme = resolve_visual_theme(visual_theme or saved_theme_value, settings_path=settings_path)
+    configured_theme = resolve_visual_theme(saved_theme_value, settings_path=settings_path)
+    use_color_overrides = not visual_theme.strip() or configured_theme.key == theme.key
+
+    def setting_value(key: str, default: str) -> str:
+        return saved.get(key, "").strip() or os.getenv(key, "").strip() or default
+
     return RenderSettings(
         visual_theme=theme,
-        title_font=os.getenv("TITLE_FONT", DEFAULT_TITLE_FONT).strip() or DEFAULT_TITLE_FONT,
-        title_color=(read_hex_color("TITLE_COLOR", theme.title_color) if use_color_overrides else theme.title_color),
+        title_font=setting_value("TITLE_FONT", DEFAULT_TITLE_FONT),
+        title_color=(
+            normalize_hex_color(setting_value("TITLE_COLOR", theme.title_color), theme.title_color)
+            if use_color_overrides
+            else theme.title_color
+        ),
         title_background_color=(
-            read_hex_color("TITLE_BACKGROUND_COLOR", theme.title_background_color)
+            normalize_hex_color(
+                setting_value("TITLE_BACKGROUND_COLOR", theme.title_background_color),
+                theme.title_background_color,
+            )
             if use_color_overrides
             else theme.title_background_color
         ),
-        subtitle_font=os.getenv("SUBTITLE_FONT", DEFAULT_SUBTITLE_FONT).strip() or DEFAULT_SUBTITLE_FONT,
+        subtitle_font=setting_value("SUBTITLE_FONT", DEFAULT_SUBTITLE_FONT),
         subtitle_color=(
-            read_hex_color("SUBTITLE_COLOR", theme.subtitle_color)
+            normalize_hex_color(setting_value("SUBTITLE_COLOR", theme.subtitle_color), theme.subtitle_color)
             if use_color_overrides
             else theme.subtitle_color
         ),
         subtitle_background_color=(
-            read_hex_color("SUBTITLE_BACKGROUND_COLOR", theme.subtitle_background_color)
+            normalize_hex_color(
+                setting_value("SUBTITLE_BACKGROUND_COLOR", theme.subtitle_background_color),
+                theme.subtitle_background_color,
+            )
             if use_color_overrides
             else theme.subtitle_background_color
         ),
     )
 
 
-def read_hex_color(key: str, default: str) -> str:
-    value = os.getenv(key, default).strip().upper()
+def normalize_hex_color(value: str, default: str) -> str:
+    value = value.strip().upper()
     if not value.startswith("#"):
         value = f"#{value}"
     if len(value) != 7 or any(character not in "0123456789ABCDEF" for character in value[1:]):
         return default
     return value
+
+
+def read_hex_color(key: str, default: str) -> str:
+    return normalize_hex_color(os.getenv(key, default), default)
 
 
 def default_background_image(project_root: Path, visual_theme: str = "") -> Path:

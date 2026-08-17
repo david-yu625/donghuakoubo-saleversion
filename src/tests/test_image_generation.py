@@ -20,6 +20,7 @@ from ..prepare.image_generation import (
     is_shot_background_prompt,
     normalize_base_url,
     original_image_path,
+    is_valid_image_file,
     uses_white_background_prompt,
 )
 
@@ -62,6 +63,19 @@ class FakeWhiteVisualService(FakeVisualService):
 
 
 class ImageGenerationTest(unittest.TestCase):
+    def test_invalid_or_empty_asset_is_not_ready(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            invalid = root / "partial.png"
+            invalid.write_bytes(b"partial")
+
+            self.assertFalse(is_valid_image_file(invalid))
+            self.assertFalse(is_valid_image_file(root / "missing.png"))
+
+            valid = root / "valid.png"
+            Image.new("RGB", (8, 8), "white").save(valid)
+            self.assertTrue(is_valid_image_file(valid))
+
     def test_background_content_bounds_records_actual_nonwhite_bottom(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "generated_assets_plus" / "s1_bg01.png"

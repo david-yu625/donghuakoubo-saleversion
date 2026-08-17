@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import uuid
+import wave
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -37,13 +38,23 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSplitter,
     QStyle,
-    QStackedWidget,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from .app_settings import (
+    APP_SETTING_KEYS,
+    APP_SETTINGS_PATH,
+    migrate_legacy_app_settings,
+    save_app_settings,
+)
 from .env import load_env_file
+from .core.speech_metrics import (
+    count_speech_chars,
+    estimate_speech_duration_range,
+    estimate_speech_duration_seconds,
+)
 from .application.image_review import ImageReviewItem, load_image_review_items
 from .application.landscape_projects import (
     LandscapeProject,
@@ -53,7 +64,7 @@ from .application.landscape_projects import (
     load_portrait_package_state,
     save_portrait_package_state,
 )
-from .paths import portrait_package_dir
+from .paths import portrait_package_dir, resolve_draft_folder
 from .pipeline_runtime import (
     API_FIELDS,
     API_DEFAULTS,
@@ -86,7 +97,6 @@ from .pipeline_runtime import (
     reuse_completed_materials,
     safe_topic,
     parse_batch_topics,
-    theme_environment_values,
     update_env_file,
     save_copywriting_text,
 )
@@ -213,10 +223,13 @@ class PipelineWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
+        self.app_settings = migrate_legacy_app_settings(ENV_PATH, APP_SETTINGS_PATH)
         load_env_file(ENV_PATH)
+        for key in APP_SETTING_KEYS:
+            os.environ.pop(key, None)
         self.setWindowTitle("动画口播智能体")
         self.resize(1040, 680)
-        self.setMinimumSize(900, 620)
+        self.setMinimumSize(1040, 620)
         self.draft_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.draft_name_is_automatic = True
         self.events: queue.Queue[tuple[str, str]] = queue.Queue()
@@ -232,9 +245,10 @@ class PipelineWindow(QMainWindow):
         self.run_buttons: dict[str, QPushButton] = {}
         self.run_button_labels: dict[str, QLabel] = {}
         self.view_buttons: dict[str, QPushButton] = {}
+        self.image_missing_button: QPushButton | None = None
         self.preview_button: QPushButton | None = None
         self.workflow_mode: QComboBox | None = None
-        self.workflow_stack: QStackedWidget | None = None
+        self.workflow_tabs: QTabWidget | None = None
         self.package_source_video: QLineEdit | None = None
         self.package_project_combo: QComboBox | None = None
         self.landscape_projects: list[LandscapeProject] = []
@@ -243,11 +257,11 @@ class PipelineWindow(QMainWindow):
         self.package_subtitle_checkbox: QCheckBox | None = None
         self.package_black_background_checkbox: QCheckBox | None = None
         self.background_black_checkbox: QCheckBox | None = None
-        self.package_master_button: QPushButton | None = None
         self.package_project_label: QLabel | None = None
         self.batch_topic_label: QWidget | None = None
         self.topic_generate_button: QPushButton | None = None
         self.batch_topic_generate_button: QPushButton | None = None
+        self.target_duration_label: QLabel | None = None
         self._topic_generation_thread: threading.Thread | None = None
         self.preview_succeeded.connect(self._on_preview_succeeded)
         self.preview_failed.connect(self._on_preview_failed)
@@ -263,7 +277,7 @@ class PipelineWindow(QMainWindow):
     def _build_ui(self) -> None:
         tabs = QTabWidget()
         tabs.addTab(self._build_workflow_tab(), "工作流")
-        tabs.addTab(self._build_settings_tab(), "环境设置")
+        tabs.addTab(self._build_settings_tab(), "设置")
         self.setCentralWidget(tabs)
 
     def _build_workflow_tab(self) -> QWidget:
@@ -286,13 +300,20 @@ class PipelineWindow(QMainWindow):
         outer.addLayout(header)
         outer.addWidget(self._build_project_panel())
 
-        self.workflow_stack = QStackedWidget()
-        self.workflow_stack.addWidget(self._build_steps_panel())
-        self.workflow_stack.addWidget(self._build_portrait_package_panel())
+        self.workflow_tabs = QTabWidget()
+        steps_scroll = QScrollArea()
+        steps_scroll.setWidgetResizable(True)
+        steps_scroll.setFrameShape(QFrame.NoFrame)
+        steps_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        steps_scroll.setWidget(self._build_steps_panel())
+        self.workflow_tabs.addTab(steps_scroll, "1 横版母片")
+        self.workflow_tabs.addTab(self._build_portrait_package_panel(), "2 竖版包装")
+        self.workflow_tabs.currentChanged.connect(self._change_workflow_stage)
+        self.workflow_tabs.setMinimumWidth(780)
         splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self.workflow_stack)
+        splitter.addWidget(self.workflow_tabs)
         splitter.addWidget(self._build_log_panel())
-        splitter.setSizes([590, 700])
+        splitter.setSizes([780, 210])
         splitter.setStretchFactor(0, 4)
         splitter.setStretchFactor(1, 5)
         outer.addWidget(splitter, 1)
@@ -307,61 +328,74 @@ class PipelineWindow(QMainWindow):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(10)
 
-        topic_label = QLabel("主题")
-        self.project_labels["topic"] = topic_label
-        grid.addWidget(topic_label, 0, 0)
-        self.inputs["topic"] = QLineEdit("什么是知识传递")
-        grid.addWidget(self.inputs["topic"], 0, 1, 1, 4)
+        direction_label = QLabel("选题方向")
+        self.project_labels["topic_direction"] = direction_label
+        grid.addWidget(direction_label, 0, 0)
+        self.inputs["topic_direction"] = QLineEdit()
+        self.inputs["topic_direction"].setPlaceholderText("例如：计算机操作系统、数据库、人工智能、大模型")
+        grid.addWidget(self.inputs["topic_direction"], 0, 1, 1, 4)
         self.topic_generate_button = self._button(
             "生成新主题",
             QStyle.SP_FileDialogContentsView,
             self.generate_new_topic,
         )
-        self.topic_generate_button.setToolTip("生成一个未在历史中出现的新主题")
+        self.topic_generate_button.setToolTip("在指定选题方向下生成一个未重复的具体主题")
         grid.addWidget(self.topic_generate_button, 0, 5)
         self.batch_topic_generate_button = self._button(
             "批量生成主题",
             QStyle.SP_FileDialogListView,
             self.generate_batch_topics,
         )
-        self.batch_topic_generate_button.setToolTip("选择数量并生成一组互不重复的新主题")
+        self.batch_topic_generate_button.setToolTip("在指定选题方向下生成一组互不重复的具体主题")
         grid.addWidget(self.batch_topic_generate_button, 0, 6, 1, 2)
+
+        topic_label = QLabel("主题")
+        self.project_labels["topic"] = topic_label
+        grid.addWidget(topic_label, 1, 0)
+        self.inputs["topic"] = QLineEdit("什么是知识传递")
+        grid.addWidget(self.inputs["topic"], 1, 1, 1, 8)
 
         settings = [
             ("故事载体", "story_world", "自动选择"),
-            ("目标字数", "target_chars", "250"),
+            ("最长字数", "target_chars", "500"),
             ("草稿名", "draft_name", f"什么是知识传递_{self.draft_timestamp}"),
         ]
         for index, (label, key, value) in enumerate(settings):
             field_label = QLabel(label)
             self.project_labels[key] = field_label
-            grid.addWidget(field_label, 1, index * 2)
+            grid.addWidget(field_label, 2, index * 2)
             edit = QLineEdit(value)
             self.inputs[key] = edit
             span = 2 if key == "draft_name" else 1
-            grid.addWidget(edit, 1, index * 2 + 1, 1, span)
+            grid.addWidget(edit, 2, index * 2 + 1, 1, span)
+        self.target_duration_label = QLabel()
+        self.target_duration_label.setObjectName("muted")
+        self.target_duration_label.setWordWrap(True)
+        grid.addWidget(self.target_duration_label, 3, 2, 1, 2)
+        self.inputs["target_chars"].textChanged.connect(self._update_duration_estimate)
+        self._update_duration_estimate(self.inputs["target_chars"].text())
         workflow_label = QLabel("工作流模式")
-        grid.addWidget(workflow_label, 1, 7)
+        grid.addWidget(workflow_label, 2, 7)
         self.workflow_mode = QComboBox()
         self.workflow_mode.addItems((WORKFLOW_LANDSCAPE, WORKFLOW_PORTRAIT_PACKAGE, WORKFLOW_NATIVE_PORTRAIT))
-        grid.addWidget(self.workflow_mode, 1, 8)
+        grid.addWidget(self.workflow_mode, 2, 8)
 
         self.inputs["topic"].textChanged.connect(self._update_automatic_draft_name)
         self.inputs["topic"].textChanged.connect(self._update_package_project_label)
         self.inputs["draft_name"].textEdited.connect(self._mark_draft_name_custom)
-        grid.addWidget(QLabel("批量主题"), 2, 0)
+        grid.addWidget(QLabel("批量主题"), 4, 0)
         self.batch_topics = QPlainTextEdit()
         self.batch_topics.setObjectName("batchTopics")
         self.batch_topics.setFixedHeight(64)
         self.batch_topics.setPlaceholderText("每行输入一个主题")
         self.batch_topics.setToolTip("批量执行时按行读取主题，空行和重复主题会被忽略")
         self.batch_topics.textChanged.connect(self._update_batch_topic_count)
-        grid.addWidget(self.batch_topics, 2, 1, 1, 7)
+        grid.addWidget(self.batch_topics, 4, 1, 1, 7)
         self.batch_status_label = QLabel("0 个主题")
         self.batch_status_label.setObjectName("muted")
         self.batch_status_label.setAlignment(Qt.AlignCenter)
-        grid.addWidget(self.batch_status_label, 2, 8)
-        self.batch_topic_label = grid.itemAtPosition(2, 0).widget()
+        grid.addWidget(self.batch_status_label, 4, 8)
+        self.batch_topic_label = grid.itemAtPosition(4, 0).widget()
         grid.setColumnStretch(1, 2)
         grid.setColumnStretch(3, 1)
         grid.setColumnStretch(5, 2)
@@ -372,11 +406,15 @@ class PipelineWindow(QMainWindow):
     def generate_new_topic(self) -> None:
         if not self._can_start_topic_generation():
             return
+        direction = self.inputs["topic_direction"].text().strip()
+        if not direction:
+            QMessageBox.information(self, "缺少选题方向", "请先填写选题方向。")
+            return
         self._set_topic_generation_enabled(False)
 
         def worker() -> None:
             try:
-                self.topic_generated.emit(generate_unique_topic())
+                self.topic_generated.emit(generate_unique_topic(direction=direction))
             except Exception as exc:
                 self.topic_generation_failed.emit(str(exc))
 
@@ -385,6 +423,10 @@ class PipelineWindow(QMainWindow):
 
     def generate_batch_topics(self) -> None:
         if not self._can_start_topic_generation():
+            return
+        direction = self.inputs["topic_direction"].text().strip()
+        if not direction:
+            QMessageBox.information(self, "缺少选题方向", "请先填写选题方向。")
             return
         count, accepted = QInputDialog.getInt(
             self,
@@ -401,7 +443,7 @@ class PipelineWindow(QMainWindow):
 
         def worker() -> None:
             try:
-                self.batch_topics_generated.emit(generate_unique_topics(count))
+                self.batch_topics_generated.emit(generate_unique_topics(count, direction=direction))
             except Exception as exc:
                 self.topic_generation_failed.emit(str(exc))
 
@@ -447,6 +489,30 @@ class PipelineWindow(QMainWindow):
         if not self.runner.running:
             count = len(parse_batch_topics(self.batch_topics.toPlainText()))
             self.batch_status_label.setText(f"{count} 个主题")
+
+    def _update_duration_estimate(self, value: str) -> None:
+        if self.target_duration_label is None:
+            return
+        raw = value.strip()
+        if not raw:
+            self.target_duration_label.setText("最长配音：请输入最长字数")
+            return
+        try:
+            char_count = int(raw)
+        except ValueError:
+            self.target_duration_label.setText("最长配音：字数需为非负整数")
+            return
+        if char_count < 0:
+            self.target_duration_label.setText("最长配音：字数需为非负整数")
+            return
+        if char_count == 0:
+            self.target_duration_label.setText("最长配音：不限制")
+            return
+        seconds = estimate_speech_duration_seconds(char_count)
+        low, high = estimate_speech_duration_range(char_count)
+        self.target_duration_label.setText(
+            f"最长配音：{char_count} 字约 {seconds:.0f} 秒（约 {low:.0f}~{high:.0f} 秒）"
+        )
 
     def _path_row(self, grid: QGridLayout, row: int, label: str, key: str, value: str, callback, button_text: str) -> None:
         grid.addWidget(QLabel(label), row, 0)
@@ -509,17 +575,12 @@ class PipelineWindow(QMainWindow):
         self.package_project_combo.currentIndexChanged.connect(self._on_package_project_changed)
         self.package_source_video.editingFinished.connect(self._remember_package_source_video)
         layout.addLayout(form)
-        self.package_master_button = self._button(
-            "\u5148\u751f\u6210\u65e0\u6807\u9898\u3001\u65e0\u5b57\u5e55\u7684\u6a2a\u7248\u6bcd\u7247\u8349\u7a3f",
-            QStyle.SP_MediaPlay,
-            self.run_landscape_master,
-        )
-        layout.addWidget(self.package_master_button)
         layout.addStretch()
         return panel
 
     def _build_steps_panel(self) -> QFrame:
         panel, layout = self._panel("生产流程")
+        panel.setMinimumHeight(500)
         layout.setSpacing(0)
         for key, title, _, action, view_action in STEP_DEFS:
             row = QFrame()
@@ -536,7 +597,7 @@ class PipelineWindow(QMainWindow):
             status.setFixedWidth(68)
             artifact = QLabel("未生成")
             artifact.setObjectName("muted")
-            artifact.setFixedWidth(58)
+            artifact.setFixedWidth(120 if key == "voice" else 58)
             row_layout.addWidget(title_label)
             row_layout.addWidget(status)
             row_layout.addWidget(artifact)
@@ -549,17 +610,32 @@ class PipelineWindow(QMainWindow):
                 )
                 self.run_button_labels[key] = action_label
             else:
-                run = self._button(action, QStyle.SP_ArrowForward, lambda checked=False, k=key: self.run_single_step(k))
-            run.setFixedWidth(420 if not view_action else 204)
+                run = self._button(
+                    action,
+                    QStyle.SP_ArrowForward,
+                    lambda checked=False, k=key: self.run_single_step(
+                        k,
+                        overwrite_images=k == "images",
+                    ),
+                )
+            run.setFixedWidth(148 if key == "images" else (420 if not view_action else 204))
             if key in STEP_BUTTON_DESCRIPTIONS:
                 run.setFixedHeight(50)
             row_layout.addWidget(run)
             self.status_labels[key] = status
             self.artifact_labels[key] = artifact
             self.run_buttons[key] = run
+            if key == "images":
+                self.image_missing_button = self._button(
+                    "生成缺失图片",
+                    QStyle.SP_ArrowForward,
+                    lambda checked=False: self.run_single_step("images", overwrite_images=False),
+                )
+                self.image_missing_button.setFixedWidth(148)
+                row_layout.addWidget(self.image_missing_button)
             if view_action:
                 view = self._button(view_action, QStyle.SP_FileDialogDetailedView, lambda checked=False, k=key: self.show_artifact(k))
-                view.setFixedWidth(204)
+                view.setFixedWidth(148 if key == "images" else 204)
                 row_layout.addWidget(view)
                 self.view_buttons[key] = view
             layout.addWidget(row)
@@ -635,7 +711,10 @@ class PipelineWindow(QMainWindow):
         render_grid.setVerticalSpacing(8)
         theme_combo = QComboBox()
         theme_combo.addItems(VISUAL_THEME_CHOICES)
-        selected_theme = resolve_visual_theme(os.getenv("VISUAL_THEME", ""))
+        selected_theme = resolve_visual_theme(
+            self.app_settings.get("VISUAL_THEME", ""),
+            settings_path=APP_SETTINGS_PATH,
+        )
         theme_combo.setCurrentText(selected_theme.label)
         self.setting_combos["VISUAL_THEME"] = theme_combo
         render_grid.addWidget(QLabel("视觉主题"), 0, 0)
@@ -665,7 +744,7 @@ class PipelineWindow(QMainWindow):
             (5, ("字幕字体", "SUBTITLE_FONT", SUBTITLE_FONT_CHOICES)),
         ):
             default = next(field[2] for field in SETTING_FIELDS if field[1] == key)
-            value = os.getenv(key, default) or default
+            value = self.app_settings.get(key, "") or default
             combo = QComboBox()
             combo.addItems(choices)
             combo.setCurrentText(value)
@@ -686,7 +765,7 @@ class PipelineWindow(QMainWindow):
             (6, ((0, "字幕背景颜色", "SUBTITLE_BACKGROUND_COLOR"),)),
         ):
             for column, label, key in controls:
-                edit = QLineEdit(os.getenv(key, color_defaults[key]) or color_defaults[key])
+                edit = QLineEdit(self.app_settings.get(key, "") or color_defaults[key])
                 self.setting_inputs[key] = edit
                 color_button = self._button(
                     "选择颜色",
@@ -713,7 +792,10 @@ class PipelineWindow(QMainWindow):
             ("草稿目录", "DRAFT_FOLDER"),
         ), start=7):
             default = next(field[2] for field in SETTING_FIELDS if field[1] == key)
-            edit = QLineEdit(os.getenv(key, default) or default)
+            value = self.app_settings.get(key, "") or default
+            if key == "DRAFT_FOLDER":
+                value = str(resolve_draft_folder(value))
+            edit = QLineEdit(value)
             self.setting_inputs[key] = edit
             path_widget = QWidget()
             path_row = QHBoxLayout(path_widget)
@@ -738,7 +820,7 @@ class PipelineWindow(QMainWindow):
         settings_layout.addLayout(render_grid)
         actions = QHBoxLayout()
         actions.addStretch()
-        actions.addWidget(self._button("保存设置", QStyle.SP_DialogSaveButton, self.save_api_settings, "primary"))
+        actions.addWidget(self._button("保存设置", QStyle.SP_DialogSaveButton, self.save_settings, "primary"))
         settings_layout.addLayout(actions)
         render_body.addWidget(settings_column, 3)
 
@@ -896,23 +978,29 @@ class PipelineWindow(QMainWindow):
         self.log.appendPlainText(f"试听失败：{message}")
         QMessageBox.warning(self, "试听失败", message)
 
-    def save_api_settings(self) -> None:
-        if not self._persist_environment_settings():
+    def save_settings(self) -> None:
+        if not self._persist_settings():
             return
-        QMessageBox.information(self, "保存成功", "环境设置已保存，后续任务将直接使用。")
+        QMessageBox.information(self, "保存成功", "接口配置和应用设置已保存。")
 
-    def _persist_environment_settings(self) -> bool:
-        values = {key: edit.text().strip() for key, edit in self.api_inputs.items()}
-        values.update({key: combo.currentText().strip() for key, combo in self.api_combos.items()})
-        values.update({key: edit.text().strip() for key, edit in self.setting_inputs.items()})
-        values.update({key: combo.currentText().strip() for key, combo in self.setting_combos.items()})
-        values.update(theme_environment_values(values["VISUAL_THEME"]))
+    def _persist_settings(self) -> bool:
+        api_values = {key: edit.text().strip() for key, edit in self.api_inputs.items()}
+        api_values.update({key: combo.currentText().strip() for key, combo in self.api_combos.items()})
+        app_values = {key: edit.text().strip() for key, edit in self.setting_inputs.items()}
+        app_values.update({key: combo.currentText().strip() for key, combo in self.setting_combos.items()})
+        app_values["VISUAL_THEME"] = resolve_visual_theme(
+            app_values["VISUAL_THEME"],
+            settings_path=APP_SETTINGS_PATH,
+        ).key
+        app_values["DRAFT_FOLDER"] = str(resolve_draft_folder(app_values["DRAFT_FOLDER"]))
         try:
-            update_env_file(ENV_PATH, values)
+            save_app_settings(app_values, APP_SETTINGS_PATH)
+            update_env_file(ENV_PATH, api_values)
         except OSError as exc:
-            QMessageBox.critical(self, "保存失败", f"无法写入 {ENV_PATH}：\n{exc}")
+            QMessageBox.critical(self, "保存失败", f"无法写入本地配置：\n{exc}")
             return False
-        os.environ.update(values)
+        self.app_settings = app_values
+        os.environ.update(api_values)
         return True
 
     def _workflow_orientation(self) -> str:
@@ -944,34 +1032,58 @@ class PipelineWindow(QMainWindow):
         del index
         mode = self.workflow_mode.currentText() if self.workflow_mode is not None else WORKFLOW_LANDSCAPE
         packaging = mode == WORKFLOW_PORTRAIT_PACKAGE
-        if self.workflow_stack is not None:
-            self.workflow_stack.setCurrentIndex(1 if packaging else 0)
+        if self.workflow_tabs is not None:
+            self.workflow_tabs.setTabVisible(1, packaging)
+            self.workflow_tabs.tabBar().setVisible(packaging)
+            self.workflow_tabs.setCurrentIndex(0)
         orientation_combo = self.setting_combos.get("VIDEO_ORIENTATION")
         if orientation_combo is not None:
             orientation_combo.setCurrentText(self._workflow_orientation())
-        self.start_button.setText(
-            "\u751f\u6210\u7ad6\u5c4f\u5305\u88c5\u8349\u7a3f"
-            if packaging
-            else "\u5f00\u59cb\u6267\u884c"
-        )
+        self._update_primary_action()
         self.batch_button.setVisible(not packaging)
         if self.batch_topic_label is not None:
             self.batch_topic_label.setVisible(not packaging)
-        if self.topic_generate_button is not None:
-            self.topic_generate_button.setVisible(not packaging)
         if self.batch_topic_generate_button is not None:
             self.batch_topic_generate_button.setVisible(not packaging)
         self.batch_topics.setVisible(not packaging)
         self.batch_status_label.setVisible(not packaging)
-        for key in ("story_world", "target_chars"):
-            self.project_labels[key].setVisible(not packaging)
-            self.inputs[key].setVisible(not packaging)
-        self.project_labels["topic"].setVisible(not packaging)
-        self.inputs["topic"].setVisible(not packaging)
-        if packaging:
-            self.refresh_landscape_projects()
-        else:
+        self._update_project_fields_for_stage()
+        if not packaging:
             self._update_package_project_label()
+
+    def _change_workflow_stage(self, index: int) -> None:
+        self._update_primary_action(index)
+        self._update_project_fields_for_stage()
+        mode = self.workflow_mode.currentText() if self.workflow_mode is not None else WORKFLOW_LANDSCAPE
+        if mode == WORKFLOW_PORTRAIT_PACKAGE and index == 1:
+            self.refresh_landscape_projects()
+
+    def _update_project_fields_for_stage(self) -> None:
+        mode = self.workflow_mode.currentText() if self.workflow_mode is not None else WORKFLOW_LANDSCAPE
+        package_stage = (
+            mode == WORKFLOW_PORTRAIT_PACKAGE
+            and self.workflow_tabs is not None
+            and self.workflow_tabs.currentIndex() == 1
+        )
+        show_creation_fields = not package_stage
+        for key in ("topic_direction", "topic", "story_world", "target_chars"):
+            self.project_labels[key].setVisible(show_creation_fields)
+            self.inputs[key].setVisible(show_creation_fields)
+        if self.target_duration_label is not None:
+            self.target_duration_label.setVisible(show_creation_fields)
+        if self.topic_generate_button is not None:
+            self.topic_generate_button.setVisible(show_creation_fields)
+
+    def _update_primary_action(self, _index: int = 0) -> None:
+        mode = self.workflow_mode.currentText() if self.workflow_mode is not None else WORKFLOW_LANDSCAPE
+        packaging = mode == WORKFLOW_PORTRAIT_PACKAGE
+        package_stage = packaging and self.workflow_tabs is not None and self.workflow_tabs.currentIndex() == 1
+        if package_stage:
+            self.start_button.setText("生成竖版包装草稿")
+        elif packaging:
+            self.start_button.setText("生成横版母片草稿")
+        else:
+            self.start_button.setText("开始执行")
 
     def _selected_landscape_project(self) -> LandscapeProject | None:
         if self.package_project_combo is None:
@@ -1034,6 +1146,7 @@ class PipelineWindow(QMainWindow):
         else:
             self.package_state.source_videos.pop(str(project.project_dir), None)
         self._save_package_state()
+        self.refresh_status()
 
     def _update_package_project_label(self, _value: str = "") -> None:
         if self.package_project_label is not None:
@@ -1076,15 +1189,9 @@ class PipelineWindow(QMainWindow):
         if self.runner.running:
             QMessageBox.information(self, "\u6b63\u5728\u8fd0\u884c", "\u5f53\u524d\u4efb\u52a1\u5c1a\u672a\u5b8c\u6210\u3002")
             return
-        project = self._selected_landscape_project()
-        if project is None:
-            QMessageBox.warning(self, "\u7f3a\u5c11\u6a2a\u7248\u9879\u76ee", "\u8bf7\u5148\u4ece\u5217\u8868\u4e2d\u9009\u62e9\u4e00\u4e2a\u6a2a\u7248\u9879\u76ee\u3002")
+        if not self._persist_settings():
             return
-        if not self._persist_environment_settings():
-            return
-        options = self._read_options()
-        options = replace(options, topic=project.topic)
-        options = reuse_completed_materials(options)
+        options = reuse_completed_materials(self._read_options())
         base_name = options.draft_name.strip() or safe_topic(options.topic)
         options = replace(options, draft_name=f"{base_name}_landscape_master")
         self.log.clear()
@@ -1115,7 +1222,7 @@ class PipelineWindow(QMainWindow):
                 f"\u6ca1\u6709\u627e\u5230\u5173\u8054\u6a2a\u5c4f\u9879\u76ee\u7684 timeline.csv\uff1a{project_dir}",
             )
             return
-        if not self._persist_environment_settings():
+        if not self._persist_settings():
             return
         self._remember_package_source_video()
         base_name = self.inputs["draft_name"].text().strip() or safe_topic(project.topic)
@@ -1140,12 +1247,16 @@ class PipelineWindow(QMainWindow):
 
     def run_pipeline(self) -> None:
         if self.workflow_mode is not None and self.workflow_mode.currentText() == WORKFLOW_PORTRAIT_PACKAGE:
-            self.run_portrait_package()
+            package_stage = self.workflow_tabs is not None and self.workflow_tabs.currentIndex() == 1
+            if package_stage:
+                self.run_portrait_package()
+            else:
+                self.run_landscape_master()
             return
         if self.runner.running:
             QMessageBox.information(self, "正在运行", "流程正在执行中。")
             return
-        if not self._persist_environment_settings():
+        if not self._persist_settings():
             return
         self.log.clear()
         self.runner.start(reuse_completed_materials(self._read_options()))
@@ -1159,7 +1270,7 @@ class PipelineWindow(QMainWindow):
         if not topics:
             QMessageBox.information(self, "没有主题", "请先录入批量主题。")
             return
-        if not self._persist_environment_settings():
+        if not self._persist_settings():
             return
         batch_id = datetime.now().strftime("%Y%m%d_%H%M%S")
         options = [
@@ -1171,11 +1282,11 @@ class PipelineWindow(QMainWindow):
         self.runner.start_batch(options)
         self.refresh_status()
 
-    def run_single_step(self, key: str) -> None:
+    def run_single_step(self, key: str, *, overwrite_images: bool = False) -> None:
         if self.runner.running:
             QMessageBox.information(self, "正在运行", "当前有任务在执行。")
             return
-        if not self._persist_environment_settings():
+        if not self._persist_settings():
             return
         options = self._read_options()
         options = replace(
@@ -1183,7 +1294,7 @@ class PipelineWindow(QMainWindow):
             run_copy=key == "copy", run_voice=key == "voice", run_shots=key == "shots",
             run_storyboard_prompts=key == "storyboard_prompts",
             run_prompts=key == "prompts", run_images=key == "images", run_layout=key == "layout",
-            run_draft=key == "draft", overwrite_images=key == "images",
+            run_draft=key == "draft", overwrite_images=key == "images" and overwrite_images,
         )
         self.runner.start(options)
         self.refresh_status()
@@ -1215,7 +1326,7 @@ class PipelineWindow(QMainWindow):
             "prompts": output / "image_prompts_plus.csv",
             "images": output / "generated_assets_plus",
             "layout": output / "layout_result.json",
-            "draft": Path(self.setting_inputs["DRAFT_FOLDER"].text()) / draft_name_for_orientation(
+            "draft": resolve_draft_folder(self.setting_inputs["DRAFT_FOLDER"].text()) / draft_name_for_orientation(
                 self.inputs["draft_name"].text(),
                 self.setting_combos["VIDEO_ORIENTATION"].currentText(),
             ),
@@ -1223,9 +1334,24 @@ class PipelineWindow(QMainWindow):
 
     def artifact_exists(self, key: str) -> bool:
         artifact = self.artifact_path(key)
-        if key == "images":
-            return artifact.is_dir() and any(p.is_file() and p.suffix.lower() in {".png", ".jpg", ".jpeg", ".webp"} for p in artifact.iterdir())
         return artifact.is_dir() and any(artifact.iterdir()) if artifact.is_dir() else artifact.exists()
+
+    def image_artifact_progress(self) -> tuple[int, int]:
+        prompt_csv = self.output_dir() / "image_prompts_plus.csv"
+        if not prompt_csv.is_file():
+            return 0, 0
+        try:
+            items = load_image_review_items(prompt_csv, PROJECT_ROOT)
+        except (OSError, ValueError):
+            return 0, 0
+        generated = 0
+        for item in items:
+            try:
+                if item.asset_path.is_file() and item.asset_path.stat().st_size > 0:
+                    generated += 1
+            except OSError:
+                continue
+        return generated, len(items)
 
     def refresh_status(self) -> None:
         running = self.runner.running
@@ -1236,25 +1362,59 @@ class PipelineWindow(QMainWindow):
         self.batch_topics.setEnabled(not running)
         self._set_topic_generation_enabled(not running and not topic_generation_running)
         for key, _, _, action, _ in STEP_DEFS:
-            exists = self.artifact_exists(key)
-            self.status_labels[key].setText("运行中" if running else ("完成" if exists else "未运行"))
-            self.artifact_labels[key].setText("已生成" if exists else "未生成")
+            if key == "images":
+                generated, total = self.image_artifact_progress()
+                exists = generated > 0
+                complete = total > 0 and generated == total
+                missing = max(0, total - generated)
+                status_text = "运行中" if running else (
+                    "完成" if complete else (f"缺失 {missing}" if total else "未运行")
+                )
+                artifact_text = f"{generated}/{total} 张" if total else "未生成"
+                can_view = total > 0
+            else:
+                exists = self.artifact_exists(key)
+                status_text = "运行中" if running else ("完成" if exists else "未运行")
+                artifact_text = "已生成" if exists else "未生成"
+                if key == "voice" and exists:
+                    artifact_text = self.voice_artifact_summary()
+                can_view = exists
+            self.status_labels[key].setText(status_text)
+            self.artifact_labels[key].setText(artifact_text)
             button_action = RERUN_ACTIONS[key] if exists else action
             if key in self.run_button_labels:
                 self.run_button_labels[key].setText(button_action)
             else:
                 self.run_buttons[key].setText(button_action)
             self.run_buttons[key].setEnabled(not running)
+            if key == "images" and self.image_missing_button is not None:
+                self.image_missing_button.setEnabled(not running)
             if key in self.view_buttons:
-                self.view_buttons[key].setEnabled(exists and not running)
+                self.view_buttons[key].setEnabled(can_view and not running)
+
+    def voice_artifact_summary(self) -> str:
+        audio = self.artifact_path("voice")
+        copy = self.artifact_path("copy")
+        if not audio.exists():
+            return "未生成"
+        try:
+            with wave.open(str(audio), "rb") as source:
+                duration = source.getnframes() / max(source.getframerate(), 1)
+        except (OSError, EOFError, wave.Error):
+            return "已生成"
+        try:
+            char_count = count_speech_chars(copy.read_text(encoding="utf-8-sig"))
+        except (OSError, UnicodeError):
+            return f"{duration:.1f} 秒"
+        return f"{char_count} 字 / {duration:.1f} 秒"
 
     def show_artifact(self, key: str) -> None:
         artifact = self.artifact_path(key)
-        if not artifact.exists():
-            QMessageBox.information(self, "未找到文件", f"没有找到对应产物：{artifact}")
-            return
         if key == "images":
             self._review_images()
+            return
+        if not artifact.exists():
+            QMessageBox.information(self, "未找到文件", f"没有找到对应产物：{artifact}")
             return
         if artifact.is_dir() or artifact.suffix.lower() not in {".txt", ".csv", ".md", ".json"}:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(artifact)))
@@ -1350,6 +1510,11 @@ class PipelineWindow(QMainWindow):
         actions.addStretch()
         actions.addWidget(self._button("关闭", QStyle.SP_DialogCloseButton, dialog.reject))
         actions.addWidget(self._button(
+            "重试失败图片",
+            QStyle.SP_BrowserReload,
+            lambda: self._retry_failed_images(dialog, prompt_csv, items),
+        ))
+        actions.addWidget(self._button(
             "重新生成选中图片",
             QStyle.SP_BrowserReload,
             lambda: self._regenerate_selected_images(dialog, prompt_csv, selections),
@@ -1357,6 +1522,39 @@ class PipelineWindow(QMainWindow):
         ))
         outer.addLayout(actions)
         dialog.exec()
+
+    def _retry_failed_images(
+        self,
+        dialog: QDialog,
+        prompt_csv: Path,
+        items: list[ImageReviewItem],
+    ) -> None:
+        failed = [item.element_id for item in items if item.is_failed]
+        if not failed:
+            QMessageBox.information(dialog, "没有失败图片", "当前图片都已生成完成。")
+            return
+        if self.runner.running:
+            QMessageBox.information(dialog, "正在运行", "当前有任务正在执行。")
+            return
+        if not self._persist_settings():
+            return
+
+        theme = resolve_visual_theme(self.setting_combos["VISUAL_THEME"].currentText())
+        command = build_image_regeneration_command(
+            prompt_csv,
+            failed,
+            image_model=self.image_model_setting.currentText(),
+            image_quality=self.api_combos["IMAGE_QUALITY"].currentText(),
+            visual_theme=theme.key,
+            overwrite=False,
+        )
+        self.log.appendPlainText(f"重试失败图片：{len(failed)} 张（已生成图片会跳过）")
+        self.runner.start_commands(
+            [(f"06 图片（重试失败 {len(failed)} 张）", command)],
+            self.output_dir(),
+        )
+        dialog.accept()
+        self.refresh_status()
 
     def _image_review_row(
         self,
@@ -1397,6 +1595,9 @@ class PipelineWindow(QMainWindow):
         identifier.setObjectName("muted")
         details.addWidget(name)
         details.addWidget(identifier)
+        state = QLabel("待重试" if item.is_failed else "已生成")
+        state.setObjectName("muted")
+        details.addWidget(state)
         details.addStretch()
         layout.addLayout(details, 1)
         return row
@@ -1414,7 +1615,7 @@ class PipelineWindow(QMainWindow):
         if self.runner.running:
             QMessageBox.information(dialog, "正在运行", "当前有任务正在执行。")
             return
-        if not self._persist_environment_settings():
+        if not self._persist_settings():
             return
 
         theme = resolve_visual_theme(self.setting_combos["VISUAL_THEME"].currentText())
