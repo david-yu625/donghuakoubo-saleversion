@@ -66,8 +66,8 @@ from .application.landscape_projects import (
 )
 from .application.jianying_automation import (
     JianyingAutomationError,
-    open_draft,
-    open_draft_and_click_export,
+    open_draft_and_click_export_with_path,
+    validate_draft_path,
 )
 from .application.douyin_publisher import (
     DouyinPublishError,
@@ -139,7 +139,7 @@ QFrame#panel { background: #15181e; border: 1px solid #252a33; border-radius: 6p
 QFrame#stepRow { background: transparent; border-bottom: 1px solid #242932; }
 QLabel#appTitle { color: #ffffff; font-size: 20px; font-weight: 600; }
 QLabel#sectionTitle { color: #f3f4f6; font-size: 14px; font-weight: 600; }
-QLabel#muted { color: #778190; font-size: 11px; }
+QLabel#muted { color: #778190; font-size: 11px; background: transparent; }
 QLabel#stepTitle { color: #f0f2f5; font-weight: 600; }
 QLabel#status {
     color: #9ca3af; background: #242932; border: 1px solid #303641;
@@ -179,6 +179,12 @@ QPlainTextEdit#batchTopics {
     font-family: "Segoe UI", "Microsoft YaHei UI"; font-size: 13px;
 }
 QPlainTextEdit#batchTopics:focus { border: 1px solid #4f8cff; }
+QPlainTextEdit#contextInput {
+    padding: 8px 10px; color: #f3f4f6; background: #0e1014;
+    border: 1px solid #303641; border-radius: 4px;
+    font-family: "Segoe UI", "Microsoft YaHei UI"; font-size: 13px;
+}
+QPlainTextEdit#contextInput:focus { border: 1px solid #4f8cff; }
 QScrollBar:vertical { width: 10px; background: #0b0d10; }
 QScrollBar::handle:vertical { min-height: 30px; background: #343a45; border-radius: 5px; }
 QScrollBar::handle:vertical:hover { background: #4a5260; }
@@ -197,6 +203,8 @@ RERUN_ACTIONS = {
     "layout": "重新编译布局",
     "draft": "重新生成草稿",
 }
+
+UI_STEP_DEFS = (*STEP_DEFS, ("automation", "09 剪映导出", "", "执行剪映导出", ""))
 
 
 class PreviewImageLabel(QLabel):
@@ -262,8 +270,7 @@ class PipelineWindow(QMainWindow):
         self.view_buttons: dict[str, QPushButton] = {}
         self.image_missing_button: QPushButton | None = None
         self.preview_button: QPushButton | None = None
-        self.open_draft_button: QPushButton | None = None
-        self.export_draft_button: QPushButton | None = None
+        self.automation_step_button: QPushButton | None = None
         self._jianying_automation_thread: threading.Thread | None = None
         self.douyin_video_input: QLineEdit | None = None
         self.douyin_title_input: QLineEdit | None = None
@@ -271,6 +278,11 @@ class PipelineWindow(QMainWindow):
         self.douyin_open_button: QPushButton | None = None
         self.douyin_publish_button: QPushButton | None = None
         self._douyin_publish_thread: threading.Thread | None = None
+        self._auto_run_step09 = False
+        self._automation_last_status = "未执行"
+        self._chain_portrait_after_export = False
+        self._portrait_chain_attempts = 0
+        self._last_jianying_export_path: Path | None = None
         self.continue_button: QPushButton | None = None
         self.workflow_mode: QComboBox | None = None
         self.workflow_tabs: QTabWidget | None = None
@@ -335,7 +347,6 @@ class PipelineWindow(QMainWindow):
         header.addWidget(self.continue_button)
         header.addWidget(self.start_button)
         outer.addLayout(header)
-        outer.addWidget(self._build_project_panel())
 
         self.workflow_tabs = QTabWidget()
         steps_scroll = QScrollArea()
@@ -347,13 +358,28 @@ class PipelineWindow(QMainWindow):
         self.workflow_tabs.addTab(self._build_portrait_package_panel(), "2 竖版包装")
         self.workflow_tabs.currentChanged.connect(self._change_workflow_stage)
         self.workflow_tabs.setMinimumWidth(780)
-        splitter = QSplitter(Qt.Horizontal)
-        splitter.addWidget(self.workflow_tabs)
-        splitter.addWidget(self._build_log_panel())
-        splitter.setSizes([780, 210])
-        splitter.setStretchFactor(0, 4)
-        splitter.setStretchFactor(1, 5)
-        outer.addWidget(splitter, 1)
+        self.workflow_tabs.setMinimumHeight(0)
+        self.workflow_tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+
+        left_column = QWidget()
+        left_layout = QVBoxLayout(left_column)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(12)
+        left_layout.addWidget(self._build_project_panel())
+        left_layout.addWidget(self.workflow_tabs, 1)
+
+        # Keep the log beside the whole workflow so it remains visible while
+        # project settings and production steps are being edited or run.
+        content_splitter = QSplitter(Qt.Horizontal)
+        content_splitter.addWidget(left_column)
+        content_splitter.addWidget(self._build_log_panel())
+        content_splitter.setSizes([780, 210])
+        content_splitter.setStretchFactor(0, 4)
+        content_splitter.setStretchFactor(1, 1)
+        content_splitter.setChildrenCollapsible(False)
+        content_splitter.setMinimumHeight(0)
+        content_splitter.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        outer.addWidget(content_splitter, 1)
         assert self.workflow_mode is not None
         self.workflow_mode.currentIndexChanged.connect(self._change_workflow_mode)
         self._change_workflow_mode(self.workflow_mode.currentIndex())
@@ -365,90 +391,101 @@ class PipelineWindow(QMainWindow):
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(10)
 
+        workflow_label = QLabel("工作流模式")
+        self.project_labels["workflow_mode"] = workflow_label
+        grid.addWidget(workflow_label, 0, 0)
+        self.workflow_mode = QComboBox()
+        self.workflow_mode.addItems((WORKFLOW_LANDSCAPE, WORKFLOW_PORTRAIT_PACKAGE, WORKFLOW_NATIVE_PORTRAIT))
+        grid.addWidget(self.workflow_mode, 0, 1, 1, 8)
+
         direction_label = QLabel("选题方向")
         self.project_labels["topic_direction"] = direction_label
-        grid.addWidget(direction_label, 0, 0)
+        grid.addWidget(direction_label, 1, 0)
         self.inputs["topic_direction"] = QLineEdit()
         self.inputs["topic_direction"].setPlaceholderText("例如：计算机操作系统、数据库、人工智能、大模型")
-        grid.addWidget(self.inputs["topic_direction"], 0, 1, 1, 4)
+        grid.addWidget(self.inputs["topic_direction"], 1, 1, 1, 4)
         self.topic_generate_button = self._button(
             "生成新主题",
             QStyle.SP_FileDialogContentsView,
             self.generate_new_topic,
         )
         self.topic_generate_button.setToolTip("在指定选题方向下生成一个未重复的具体主题")
-        grid.addWidget(self.topic_generate_button, 0, 5)
+        grid.addWidget(self.topic_generate_button, 1, 5)
         self.batch_topic_generate_button = self._button(
             "批量生成主题",
             QStyle.SP_FileDialogListView,
             self.generate_batch_topics,
         )
         self.batch_topic_generate_button.setToolTip("在指定选题方向下生成一组互不重复的具体主题")
-        grid.addWidget(self.batch_topic_generate_button, 0, 6, 1, 2)
+        grid.addWidget(self.batch_topic_generate_button, 1, 6, 1, 2)
 
         topic_label = QLabel("主题")
         self.project_labels["topic"] = topic_label
-        grid.addWidget(topic_label, 1, 0)
+        grid.addWidget(topic_label, 2, 0)
         self.inputs["topic"] = QLineEdit("什么是知识传递")
-        grid.addWidget(self.inputs["topic"], 1, 1, 1, 8)
+        grid.addWidget(self.inputs["topic"], 2, 1, 1, 8)
 
         context_label = QLabel("上下文 / 行文思路")
         self.project_labels["context"] = context_label
-        grid.addWidget(context_label, 2, 0, Qt.AlignTop)
+        grid.addWidget(context_label, 3, 0, Qt.AlignTop)
         self.context_input = QPlainTextEdit()
-        self.context_input.setFixedHeight(68)
+        self.context_input.setObjectName("contextInput")
+        # The context is a real multi-line brief, so reserve enough vertical
+        # space for the label, placeholder and at least several input lines.
+        self.context_input.setFixedHeight(80)
         self.context_input.setPlaceholderText(
             "例如：‘养龙虾’指用人工智能生成养殖方案，不是现实养殖；重点讲清概念区别。"
         )
         self.context_input.setToolTip("补充主题背景、关键词含义、受众和行文重点，帮助模型避免跑题")
-        grid.addWidget(self.context_input, 2, 1, 1, 8)
+        grid.addWidget(self.context_input, 3, 1, 1, 8)
 
-        settings = [
-            ("故事载体", "story_world", "自动选择"),
-            ("最长字数", "target_chars", "500"),
-            ("草稿名", "draft_name", f"什么是知识传递_{self.draft_timestamp}"),
-        ]
-        for index, (label, key, value) in enumerate(settings):
+        settings = (
+            ("故事载体", "story_world", "自动选择", 4, 0, 1, 3),
+            ("最长字数", "target_chars", "500", 4, 4, 5, 1),
+            ("草稿名", "draft_name", f"什么是知识传递_{self.draft_timestamp}", 5, 0, 1, 4),
+        )
+        for label, key, value, row, label_column, field_column, field_span in settings:
             field_label = QLabel(label)
             self.project_labels[key] = field_label
-            grid.addWidget(field_label, 3, index * 2)
+            grid.addWidget(field_label, row, label_column)
             edit = QLineEdit(value)
             self.inputs[key] = edit
-            span = 2 if key == "draft_name" else 1
-            grid.addWidget(edit, 3, index * 2 + 1, 1, span)
+            grid.addWidget(edit, row, field_column, 1, field_span)
         self.target_duration_label = QLabel()
         self.target_duration_label.setObjectName("muted")
-        self.target_duration_label.setWordWrap(True)
-        grid.addWidget(self.target_duration_label, 4, 2, 1, 2)
+        self.target_duration_label.setWordWrap(False)
+        self.target_duration_label.setMinimumWidth(210)
+        self.target_duration_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        grid.addWidget(self.target_duration_label, 4, 6, 1, 3, Qt.AlignLeft | Qt.AlignVCenter)
+        grid.setRowMinimumHeight(3, 80)
         self.inputs["target_chars"].textChanged.connect(self._update_duration_estimate)
         self._update_duration_estimate(self.inputs["target_chars"].text())
-        workflow_label = QLabel("工作流模式")
-        grid.addWidget(workflow_label, 3, 7)
-        self.workflow_mode = QComboBox()
-        self.workflow_mode.addItems((WORKFLOW_LANDSCAPE, WORKFLOW_PORTRAIT_PACKAGE, WORKFLOW_NATIVE_PORTRAIT))
-        grid.addWidget(self.workflow_mode, 3, 8)
 
         self.inputs["topic"].textChanged.connect(self._update_automatic_draft_name)
         self.inputs["topic"].textChanged.connect(self._update_package_project_label)
         self.inputs["draft_name"].textEdited.connect(self._mark_draft_name_custom)
-        grid.addWidget(QLabel("批量主题"), 5, 0)
+        grid.addWidget(QLabel("批量主题"), 6, 0)
         self.batch_topics = QPlainTextEdit()
         self.batch_topics.setObjectName("batchTopics")
         self.batch_topics.setFixedHeight(64)
         self.batch_topics.setPlaceholderText("每行输入一个主题")
         self.batch_topics.setToolTip("批量执行时按行读取主题，空行和重复主题会被忽略")
         self.batch_topics.textChanged.connect(self._update_batch_topic_count)
-        grid.addWidget(self.batch_topics, 5, 1, 1, 7)
+        grid.addWidget(self.batch_topics, 6, 1, 1, 7)
         self.batch_status_label = QLabel("0 个主题")
         self.batch_status_label.setObjectName("muted")
         self.batch_status_label.setAlignment(Qt.AlignCenter)
-        grid.addWidget(self.batch_status_label, 5, 8)
-        self.batch_topic_label = grid.itemAtPosition(5, 0).widget()
+        grid.addWidget(self.batch_status_label, 6, 8)
+        self.batch_topic_label = grid.itemAtPosition(6, 0).widget()
         grid.setColumnStretch(1, 2)
         grid.setColumnStretch(3, 1)
         grid.setColumnStretch(5, 2)
         grid.setColumnStretch(8, 2)
         layout.addLayout(grid)
+        # The workflow page can be shorter than this form's size hint. Without
+        # an explicit minimum, Qt compresses the grid rows while fixed-height
+        # editors keep their height and overlap the rows below.
+        panel.setMinimumHeight(panel.sizeHint().height())
         return panel
 
     def generate_new_topic(self) -> None:
@@ -630,7 +667,7 @@ class PipelineWindow(QMainWindow):
         panel, layout = self._panel("生产流程")
         panel.setMinimumHeight(500)
         layout.setSpacing(0)
-        for key, title, _, action, view_action in STEP_DEFS:
+        for key, title, _, action, view_action in UI_STEP_DEFS:
             row = QFrame()
             row.setObjectName("stepRow")
             row_layout = QHBoxLayout(row)
@@ -650,7 +687,16 @@ class PipelineWindow(QMainWindow):
             row_layout.addWidget(status)
             row_layout.addWidget(artifact)
             row_layout.addStretch(1)
-            if key in STEP_BUTTON_DESCRIPTIONS:
+            if key == "automation":
+                run = self._button(
+                    action,
+                    QStyle.SP_ArrowForward,
+                    self.run_automation_step,
+                    "primary",
+                )
+                run.setToolTip("打开当前剪映草稿并点击导出（支持 Windows 和 macOS）")
+                self.automation_step_button = run
+            elif key in STEP_BUTTON_DESCRIPTIONS:
                 run, action_label = self._described_button(
                     action,
                     STEP_BUTTON_DESCRIPTIONS[key],
@@ -666,7 +712,10 @@ class PipelineWindow(QMainWindow):
                         overwrite_images=k == "images",
                     ),
                 )
-            run.setFixedWidth(148 if key == "images" else (420 if not view_action else 204))
+            if key == "automation":
+                run.setFixedWidth(420)
+            else:
+                run.setFixedWidth(148 if key == "images" else (420 if not view_action else 204))
             if key in STEP_BUTTON_DESCRIPTIONS:
                 run.setFixedHeight(50)
             row_layout.addWidget(run)
@@ -871,31 +920,6 @@ class PipelineWindow(QMainWindow):
         actions.addWidget(self._button("保存设置", QStyle.SP_DialogSaveButton, self.save_settings, "primary"))
         settings_layout.addLayout(actions)
 
-        jianying_heading = QLabel("剪映草稿操作")
-        jianying_heading.setObjectName("sectionTitle")
-        settings_layout.addWidget(jianying_heading)
-        jianying_note = QLabel("只操作已经生成的草稿，不会加入 01～08 流程。导出按钮只打开剪映导出面板，不自动确认覆盖。")
-        jianying_note.setObjectName("muted")
-        jianying_note.setWordWrap(True)
-        settings_layout.addWidget(jianying_note)
-        jianying_actions = QHBoxLayout()
-        self.open_draft_button = self._button(
-            "打开剪映草稿",
-            QStyle.SP_DirOpenIcon,
-            self.open_current_jianying_draft,
-        )
-        self.open_draft_button.setToolTip("根据当前草稿目录和草稿名，在剪映项目列表中打开对应草稿")
-        self.export_draft_button = self._button(
-            "打开并点击导出",
-            QStyle.SP_ArrowForward,
-            self.export_current_jianying_draft,
-        )
-        self.export_draft_button.setToolTip("打开当前草稿并点击剪映的导出按钮，导出参数由你在剪映中确认")
-        jianying_actions.addWidget(self.open_draft_button)
-        jianying_actions.addWidget(self.export_draft_button)
-        jianying_actions.addStretch()
-        settings_layout.addLayout(jianying_actions)
-
         douyin_heading = QLabel("抖音发布（独立功能）")
         douyin_heading.setObjectName("sectionTitle")
         settings_layout.addWidget(douyin_heading)
@@ -1099,45 +1123,54 @@ class PipelineWindow(QMainWindow):
     def _current_jianying_draft(self) -> tuple[Path, str]:
         """Resolve the draft selected by the UI without touching pipeline options."""
         draft_folder = resolve_draft_folder(self.setting_inputs["DRAFT_FOLDER"].text())
-        packaging = (
+        package_mode = (
             self.workflow_mode is not None
             and self.workflow_mode.currentText() == WORKFLOW_PORTRAIT_PACKAGE
-            and self.workflow_tabs is not None
-            and self.workflow_tabs.currentIndex() == 1
         )
+        package_stage = package_mode and self.workflow_tabs is not None and self.workflow_tabs.currentIndex() == 1
+        landscape_master = package_mode and not package_stage
         base_name = self.inputs["draft_name"].text().strip() or safe_topic(self.inputs["topic"].text())
-        if packaging:
+        if package_stage:
             draft_name = base_name if base_name.endswith("_portrait_package") else f"{base_name}_portrait_package"
+        elif landscape_master:
+            base_name = base_name if base_name.endswith("_landscape_master") else f"{base_name}_landscape_master"
+            orientation = self.setting_combos["VIDEO_ORIENTATION"].currentText()
+            draft_name = draft_name_for_orientation(base_name, orientation)
         else:
             orientation = self.setting_combos["VIDEO_ORIENTATION"].currentText()
             draft_name = draft_name_for_orientation(base_name, orientation)
         return draft_folder, draft_name
 
-    def _start_jianying_automation(self, *, export: bool) -> None:
+    def _start_jianying_automation(self) -> None:
         if self._jianying_automation_thread is not None and self._jianying_automation_thread.is_alive():
             QMessageBox.information(self, "正在操作剪映", "上一次剪映操作尚未完成，请稍候。")
             return
+        if os.name != "nt" and sys.platform != "darwin":
+            self._automation_last_status = "不可用"
+            self.refresh_status()
+            QMessageBox.information(self, "剪映操作不可用", "第09步的剪映桌面自动化仅支持 Windows 和 macOS。")
+            return
         try:
             draft_folder, draft_name = self._current_jianying_draft()
-            draft_path = draft_folder / draft_name
-            if not draft_path.is_dir():
-                raise JianyingAutomationError(f"没有找到对应草稿：{draft_path}")
+            draft_path = validate_draft_path(draft_folder, draft_name)
         except (KeyError, OSError, JianyingAutomationError) as exc:
+            self._automation_last_status = "未就绪"
+            self.refresh_status()
             QMessageBox.warning(self, "找不到剪映草稿", str(exc))
             return
 
-        action = "打开并点击导出" if export else "打开剪映草稿"
-        self.log.appendPlainText(f"剪映操作：{action} -> {draft_path}")
+        self._automation_last_status = "运行中"
+        if self._chain_portrait_after_export:
+            self._last_jianying_export_path = None
+        self.log.appendPlainText(f"剪映操作：打开草稿并开始导出 -> {draft_path}")
         self._set_jianying_automation_enabled(False)
 
         def worker() -> None:
             try:
-                if export:
-                    result = open_draft_and_click_export(draft_folder, draft_name)
-                    message = f"已打开草稿并点击导出：{result}"
-                else:
-                    result = open_draft(draft_folder, draft_name)
-                    message = f"已打开剪映草稿：{result}"
+                result, export_path = open_draft_and_click_export_with_path(draft_folder, draft_name)
+                self._last_jianying_export_path = export_path
+                detail = f"，导出路径：{export_path}" if export_path is not None else ""
+                message = f"已打开草稿并完成导出：{result}{detail}"
                 self.jianying_automation_succeeded.emit(message)
             except Exception as exc:
                 self.jianying_automation_failed.emit(str(exc))
@@ -1145,26 +1178,103 @@ class PipelineWindow(QMainWindow):
         self._jianying_automation_thread = threading.Thread(target=worker, daemon=True)
         self._jianying_automation_thread.start()
 
-    def open_current_jianying_draft(self) -> None:
-        self._start_jianying_automation(export=False)
+    def run_automation_step(self) -> None:
+        """Run step 09 independently once a Jianying draft exists."""
 
-    def export_current_jianying_draft(self) -> None:
-        self._start_jianying_automation(export=True)
+        if self.runner.running:
+            QMessageBox.information(self, "正在运行", "请等待第 01～08 步完成后再执行第 09 步。")
+            return
+        self._start_jianying_automation()
+        self.refresh_status()
 
     def _set_jianying_automation_enabled(self, enabled: bool) -> None:
-        if self.open_draft_button is not None:
-            self.open_draft_button.setEnabled(enabled)
-        if self.export_draft_button is not None:
-            self.export_draft_button.setEnabled(enabled)
+        if self.automation_step_button is not None:
+            self.automation_step_button.setEnabled(enabled)
 
     def _on_jianying_automation_succeeded(self, message: str) -> None:
+        self._automation_last_status = "完成"
         self._set_jianying_automation_enabled(True)
         self.log.appendPlainText(message)
+        if self._chain_portrait_after_export:
+            QTimer.singleShot(0, self._continue_portrait_package_after_export)
+        self.refresh_status()
+
+    def _continue_portrait_package_after_export(self) -> None:
+        """Find the fresh landscape MP4 and start the portrait wrapper stage."""
+        if not self._chain_portrait_after_export:
+            return
+        if self.runner.running or (
+            self._jianying_automation_thread is not None
+            and self._jianying_automation_thread.is_alive()
+        ):
+            QTimer.singleShot(250, self._continue_portrait_package_after_export)
+            return
+
+        self._portrait_chain_attempts += 1
+        if self._portrait_chain_attempts > 40:
+            self._chain_portrait_after_export = False
+            message = "横版已导出，但在 40 秒内没有找到剪映导出路径对应的 MP4，竖版包装未启动。"
+            self.log.appendPlainText(message)
+            QMessageBox.warning(self, "未找到横版导出视频", message)
+            return
+
+        topic = self.inputs["topic"].text().strip()
+        projects = discover_landscape_projects(OUTPUT_ROOT)
+        project = next((item for item in projects if item.topic == topic), None)
+        if project is None:
+            self.log.appendPlainText("等待横版项目写入完成，准备查找导出视频…")
+            QTimer.singleShot(1000, self._continue_portrait_package_after_export)
+            return
+
+        source = self._last_jianying_export_path
+        if source is None:
+            self._chain_portrait_after_export = False
+            message = "剪映导出已完成，但没有读取到导出设置中的 MP4 路径，竖版包装未启动。"
+            self.log.appendPlainText(message)
+            QMessageBox.warning(self, "未读取到导出路径", message)
+            return
+        try:
+            source_is_fresh = source.is_file()
+        except OSError:
+            source_is_fresh = False
+        if not source_is_fresh:
+            if self._portrait_chain_attempts == 1:
+                self.log.appendPlainText("横版导出已完成，等待指定 MP4 文件落盘…")
+            QTimer.singleShot(1000, self._continue_portrait_package_after_export)
+            return
+
+        self.package_state.selected_project = str(project.project_dir)
+        self.refresh_landscape_projects()
+        selected_index = next(
+            (
+                index
+                for index, item in enumerate(self.landscape_projects)
+                if item.project_dir == project.project_dir
+            ),
+            -1,
+        )
+        if self.package_project_combo is None or selected_index < 0:
+            QTimer.singleShot(1000, self._continue_portrait_package_after_export)
+            return
+        self.package_project_combo.setCurrentIndex(selected_index)
+        assert self.package_source_video is not None
+        self.package_source_video.setText(str(source))
+        self._remember_package_source_video()
+        self._chain_portrait_after_export = False
+        self._portrait_chain_attempts = 0
+        if self.workflow_tabs is not None:
+            self.workflow_tabs.setCurrentIndex(1)
+        self.log.appendPlainText(f"已找到横版 MP4：{source}")
+        self.log.appendPlainText("开始串联竖版包装…")
+        self.run_portrait_package(clear_log=False)
 
     def _on_jianying_automation_failed(self, message: str) -> None:
+        self._automation_last_status = "失败"
+        self._chain_portrait_after_export = False
         self._set_jianying_automation_enabled(True)
         self.log.appendPlainText(f"剪映操作失败：{message}")
         QMessageBox.warning(self, "剪映操作失败", message)
+        self.refresh_status()
 
     def choose_douyin_video(self) -> None:
         assert self.douyin_video_input is not None
@@ -1347,10 +1457,13 @@ class PipelineWindow(QMainWindow):
         package_stage = packaging and self.workflow_tabs is not None and self.workflow_tabs.currentIndex() == 1
         if package_stage:
             self.start_button.setText("生成竖版包装草稿")
+            self.start_button.setToolTip("使用已导出的横版 MP4 生成竖版包装草稿")
         elif packaging:
-            self.start_button.setText("生成横版母片草稿")
+            self.start_button.setText("生成横版并串联竖版")
+            self.start_button.setToolTip("生成横版母片、自动导出 MP4，并将导出视频串联到竖版包装")
         else:
             self.start_button.setText("开始执行")
+            self.start_button.setToolTip("")
         if self.continue_button is not None:
             can_start_from_copy = not package_stage
             self.continue_button.setVisible(can_start_from_copy)
@@ -1471,10 +1584,14 @@ class PipelineWindow(QMainWindow):
         base_name = options.draft_name.strip() or safe_topic(options.topic)
         options = replace(options, draft_name=f"{base_name}_landscape_master")
         self.log.clear()
+        self._automation_last_status = "未执行"
+        self._chain_portrait_after_export = True
+        self._portrait_chain_attempts = 0
+        self._auto_run_step09 = True
         self.runner.start(options)
         self.refresh_status()
 
-    def run_portrait_package(self) -> None:
+    def run_portrait_package(self, *, clear_log: bool = True) -> None:
         if self.runner.running:
             QMessageBox.information(self, "\u6b63\u5728\u8fd0\u884c", "\u5f53\u524d\u4efb\u52a1\u5c1a\u672a\u5b8c\u6210\u3002")
             return
@@ -1514,7 +1631,11 @@ class PipelineWindow(QMainWindow):
             include_subtitles=self.package_subtitle_checkbox.isChecked(),
             include_background=not self.package_black_background_checkbox.isChecked(),
         )
-        self.log.clear()
+        if clear_log:
+            self.log.clear()
+        self._automation_last_status = "未执行"
+        self._chain_portrait_after_export = False
+        self._auto_run_step09 = True
         self.runner.start_commands(
             [("\u7ad6\u5c4f\u5305\u88c5", command)],
             portrait_package_dir(project_dir),
@@ -1535,7 +1656,11 @@ class PipelineWindow(QMainWindow):
         if not self._persist_settings():
             return
         self.log.clear()
-        self.runner.start(reuse_completed_materials(self._read_options()))
+        options = reuse_completed_materials(self._read_options())
+        self._automation_last_status = "未执行" if options.run_draft else self._automation_last_status
+        self._chain_portrait_after_export = False
+        self._auto_run_step09 = options.run_draft
+        self.runner.start(options)
         self.refresh_status()
 
     def run_from_copywriting(self) -> None:
@@ -1571,6 +1696,10 @@ class PipelineWindow(QMainWindow):
             run_draft=True,
         )
         self.log.clear()
+        self._automation_last_status = "未执行"
+        self._chain_portrait_after_export = packaging and not package_stage
+        self._portrait_chain_attempts = 0
+        self._auto_run_step09 = True
         self.runner.start(options)
         self.refresh_status()
 
@@ -1590,6 +1719,8 @@ class PipelineWindow(QMainWindow):
             for item in build_batch_options(self._read_options(), topics, batch_id=batch_id)
         ]
         self.log.clear()
+        self._auto_run_step09 = False
+        self._chain_portrait_after_export = False
         self.batch_status_label.setText(f"0/{len(options)} 准备")
         self.runner.start_batch(options)
         self.refresh_status()
@@ -1608,6 +1739,17 @@ class PipelineWindow(QMainWindow):
             run_prompts=key == "prompts", run_images=key == "images", run_layout=key == "layout",
             run_draft=key == "draft", overwrite_images=key == "images" and overwrite_images,
         )
+        if key == "draft":
+            self._automation_last_status = "未执行"
+        # Running an individual step must remain isolated.  In particular,
+        # regenerating the draft should not launch Jianying automatically;
+        # step 09 has its own explicit button in the workflow list.
+        self._auto_run_step09 = False
+        self._chain_portrait_after_export = False
+        # The clicked workflow button is disabled when the runner starts. Move
+        # focus to the log panel first so Qt does not scroll to the next
+        # enabled button at the bottom of the production list.
+        self.log.setFocus(Qt.OtherFocusReason)
         self.runner.start(options)
         self.refresh_status()
 
@@ -1621,7 +1763,23 @@ class PipelineWindow(QMainWindow):
                 self.log.appendPlainText(text)
             elif kind == "batch_progress":
                 self.batch_status_label.setText(text)
+            elif kind == "status":
+                if text == "完成" and self._auto_run_step09:
+                    QTimer.singleShot(0, self._run_automation_when_idle)
+                elif text in {"失败", "已停止", "部分失败"}:
+                    self._auto_run_step09 = False
+                    self._chain_portrait_after_export = False
         self.refresh_status()
+
+    def _run_automation_when_idle(self) -> None:
+        """Wait for the runner thread to exit before starting desktop automation."""
+        if not self._auto_run_step09:
+            return
+        if self.runner.running:
+            QTimer.singleShot(100, self._run_automation_when_idle)
+            return
+        self._auto_run_step09 = False
+        self.run_automation_step()
 
     def output_dir(self) -> Path:
         return OUTPUT_ROOT / safe_topic(self.inputs["topic"].text()) / orientation_key(
@@ -1666,6 +1824,7 @@ class PipelineWindow(QMainWindow):
     def refresh_status(self) -> None:
         running = self.runner.running
         jianying_running = self._jianying_automation_thread is not None and self._jianying_automation_thread.is_alive()
+        jianying_supported = os.name == "nt" or sys.platform == "darwin"
         douyin_running = self._douyin_publish_thread is not None and self._douyin_publish_thread.is_alive()
         topic_generation_running = self._topic_generation_thread is not None and self._topic_generation_thread.is_alive()
         self.start_button.setEnabled(not running)
@@ -1675,12 +1834,36 @@ class PipelineWindow(QMainWindow):
         self.stop_button.setEnabled(running)
         self.batch_topics.setEnabled(not running)
         self._set_topic_generation_enabled(not running and not topic_generation_running)
-        if self.open_draft_button is not None or self.export_draft_button is not None:
-            draft_ready = self.artifact_exists("draft")
-            self._set_jianying_automation_enabled(draft_ready and not jianying_running)
+        draft_ready = self.artifact_exists("draft")
+        self._set_jianying_automation_enabled(
+            jianying_supported and draft_ready and not running and not jianying_running
+        )
         if self.douyin_open_button is not None or self.douyin_publish_button is not None:
             self._set_douyin_publish_enabled(not douyin_running)
-        for key, _, _, action, _ in STEP_DEFS:
+        for key, _, _, action, _ in UI_STEP_DEFS:
+            if key == "automation":
+                if not jianying_supported:
+                    status_text = "不可用"
+                    artifact_text = "仅支持 Windows/macOS"
+                elif not draft_ready:
+                    status_text = "未就绪"
+                    artifact_text = "请先生成草稿"
+                elif jianying_running or self._automation_last_status == "运行中":
+                    status_text = "运行中"
+                    artifact_text = "草稿已生成"
+                elif self._automation_last_status in {"完成", "失败"}:
+                    status_text = self._automation_last_status
+                    artifact_text = "草稿已生成"
+                else:
+                    status_text = "待执行"
+                    artifact_text = "草稿已生成"
+                self.status_labels[key].setText(status_text)
+                self.artifact_labels[key].setText(artifact_text)
+                self.run_buttons[key].setText(action)
+                self.run_buttons[key].setEnabled(
+                    jianying_supported and draft_ready and not running and not jianying_running
+                )
+                continue
             if key == "images":
                 generated, total = self.image_artifact_progress()
                 exists = generated > 0

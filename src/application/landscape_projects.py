@@ -103,6 +103,9 @@ def find_matching_landscape_video(
         (topic_root, True),
         (project_root / "exports", True),
         (project_root, False),
+        # Jianying's configured export destination on this workstation.
+        (home / "Desktop" / "视频", False),
+        (home / "Movies", False),
         (home / "Videos", False),
         (home / "Desktop", False),
         (home / "Downloads", False),

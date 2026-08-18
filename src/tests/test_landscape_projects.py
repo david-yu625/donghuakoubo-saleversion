@@ -110,6 +110,32 @@ class LandscapeProjectsTest(unittest.TestCase):
 
         self.assertEqual(result, newest.resolve())
 
+    def test_matching_video_uses_configured_desktop_video_folder(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            project_dir = root / "topic" / "landscape"
+            project_dir.mkdir(parents=True)
+            timeline = project_dir / "timeline.csv"
+            timeline.write_text("time\n", encoding="utf-8")
+            export_dir = root / "Desktop" / "视频"
+            export_dir.mkdir(parents=True)
+            exported = export_dir / "topic_20260818_landscape.mp4"
+            exported.write_bytes(b"mp4")
+            project = LandscapeProject(
+                topic="topic",
+                project_dir=project_dir,
+                timeline_path=timeline,
+                modified_ns=project_dir.stat().st_mtime_ns,
+            )
+
+            result = find_matching_landscape_video(
+                project,
+                project_root=root / "project",
+                home=root,
+            )
+
+            self.assertEqual(result, exported.resolve())
+
 
 if __name__ == "__main__":
     unittest.main()
