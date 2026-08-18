@@ -208,6 +208,7 @@ class ScriptFile:
         self.fps = fps
         self.duration = 0
         self.maintrack_adsorb = maintrack_adsorb
+        self.cover_image_path: Optional[str] = None
 
         self.materials = ScriptMaterial()
         self.tracks = {}
@@ -242,8 +243,29 @@ class ScriptFile:
 
         obj.imported_materials = deepcopy(obj.content["materials"])
         obj.imported_tracks = [import_track(track_data) for track_data in obj.content["tracks"]]
+        obj.cover_image_path = None
 
         return obj
+
+    def set_cover_image(self, image_path: str, *, cover_id: Optional[str] = None) -> "ScriptFile":
+        """Set the local image used as the Jianying draft cover.
+
+        The cover is stored through the normal :meth:`save` path so callers do
+        not need to edit ``draft_content.json`` or ``draft_meta_info.json``
+        themselves.
+        """
+        image_path = os.path.abspath(os.path.expanduser(image_path))
+        if not os.path.isfile(image_path):
+            raise FileNotFoundError(f"封面图片不存在: {image_path}")
+        self.cover_image_path = image_path
+        self.content["cover"] = {
+            "cover_draft_id": cover_id or f"{str(uuid.uuid4()).upper()}_material",
+            "cover_template": None,
+            "sub_type": "frame",
+            "type": "image",
+            "web_cover_info": None,
+        }
+        return self
 
     def add_material(self, material: Union[VideoMaterial, AudioMaterial]) -> "ScriptFile":
         """向草稿文件中添加一个素材"""
@@ -902,6 +924,8 @@ class ScriptFile:
                 meta_info = json.load(f)
             meta_info["tm_duration"] = self.duration
             meta_info["tm_draft_modified"] = int(time.time() * 1e6)
+            if self.cover_image_path is not None:
+                meta_info["draft_cover"] = os.path.basename(self.cover_image_path)
             for material_type in [0, 8]:
                 materials = [material for material in bundled_materials if material["type"] == material_type]
                 if not materials:

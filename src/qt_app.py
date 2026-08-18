@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStyle,
     QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -66,6 +67,7 @@ from .application.landscape_projects import (
 )
 from .application.jianying_automation import (
     JianyingAutomationError,
+    find_timestamp_matching_draft,
     open_draft_and_click_export_with_path,
     validate_draft_path,
 )
@@ -189,7 +191,12 @@ QScrollBar:vertical { width: 10px; background: #0b0d10; }
 QScrollBar::handle:vertical { min-height: 30px; background: #343a45; border-radius: 5px; }
 QScrollBar::handle:vertical:hover { background: #4a5260; }
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
-QSplitter::handle { width: 8px; background: #0f1115; }
+QSplitter::handle { width: 8px; height: 8px; background: #0f1115; }
+QToolButton {
+    width: 28px; height: 28px; background: transparent;
+    border: 1px solid transparent; border-radius: 4px;
+}
+QToolButton:hover { background: #252a33; border-color: #343b47; }
 QToolTip { color: #f3f4f6; background: #252a33; border: 1px solid #46505f; padding: 5px; }
 """
 
@@ -279,6 +286,7 @@ class PipelineWindow(QMainWindow):
         self.douyin_publish_button: QPushButton | None = None
         self._douyin_publish_thread: threading.Thread | None = None
         self._auto_run_step09 = False
+        self._automation_draft_target: tuple[Path, str] | None = None
         self._automation_last_status = "未执行"
         self._chain_portrait_after_export = False
         self._portrait_chain_attempts = 0
@@ -286,6 +294,12 @@ class PipelineWindow(QMainWindow):
         self.continue_button: QPushButton | None = None
         self.workflow_mode: QComboBox | None = None
         self.workflow_tabs: QTabWidget | None = None
+        self.project_panel: QFrame | None = None
+        self.project_panel_body: QWidget | None = None
+        self.project_settings_scroll: QScrollArea | None = None
+        self.workflow_splitter: QSplitter | None = None
+        self.project_toggle_button: QToolButton | None = None
+        self.project_settings_expanded = True
         self.package_source_video: QLineEdit | None = None
         self.package_project_combo: QComboBox | None = None
         self.landscape_projects: list[LandscapeProject] = []
@@ -354,24 +368,41 @@ class PipelineWindow(QMainWindow):
         steps_scroll.setFrameShape(QFrame.NoFrame)
         steps_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         steps_scroll.setWidget(self._build_steps_panel())
+
+        portrait_scroll = QScrollArea()
+        portrait_scroll.setWidgetResizable(True)
+        portrait_scroll.setFrameShape(QFrame.NoFrame)
+        portrait_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        portrait_scroll.setWidget(self._build_portrait_package_panel())
+
         self.workflow_tabs.addTab(steps_scroll, "1 横版母片")
-        self.workflow_tabs.addTab(self._build_portrait_package_panel(), "2 竖版包装")
+        self.workflow_tabs.addTab(portrait_scroll, "2 竖版包装")
         self.workflow_tabs.currentChanged.connect(self._change_workflow_stage)
         self.workflow_tabs.setMinimumWidth(780)
-        self.workflow_tabs.setMinimumHeight(0)
-        self.workflow_tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Ignored)
+        self.workflow_tabs.setMinimumHeight(220)
+        self.workflow_tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
-        left_column = QWidget()
-        left_layout = QVBoxLayout(left_column)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(12)
-        left_layout.addWidget(self._build_project_panel())
-        left_layout.addWidget(self.workflow_tabs, 1)
+        self.project_panel = self._build_project_panel()
+        self.project_settings_scroll = QScrollArea()
+        self.project_settings_scroll.setWidgetResizable(True)
+        self.project_settings_scroll.setFrameShape(QFrame.NoFrame)
+        self.project_settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.project_settings_scroll.setWidget(self.project_panel)
+        self.project_settings_scroll.setMinimumHeight(150)
+        self.project_settings_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+        self.workflow_splitter = QSplitter(Qt.Vertical)
+        self.workflow_splitter.addWidget(self.project_settings_scroll)
+        self.workflow_splitter.addWidget(self.workflow_tabs)
+        self.workflow_splitter.setSizes([240, 490])
+        self.workflow_splitter.setStretchFactor(0, 0)
+        self.workflow_splitter.setStretchFactor(1, 1)
+        self.workflow_splitter.setChildrenCollapsible(False)
 
         # Keep the log beside the whole workflow so it remains visible while
         # project settings and production steps are being edited or run.
         content_splitter = QSplitter(Qt.Horizontal)
-        content_splitter.addWidget(left_column)
+        content_splitter.addWidget(self.workflow_splitter)
         content_splitter.addWidget(self._build_log_panel())
         content_splitter.setSizes([780, 210])
         content_splitter.setStretchFactor(0, 4)
@@ -386,8 +417,14 @@ class PipelineWindow(QMainWindow):
         return page
 
     def _build_project_panel(self) -> QFrame:
-        panel, layout = self._panel("项目设置")
+        self.project_toggle_button = QToolButton()
+        self.project_toggle_button.setIcon(self.style().standardIcon(QStyle.SP_ArrowUp))
+        self.project_toggle_button.setToolTip("收起项目设置")
+        self.project_toggle_button.clicked.connect(self.toggle_project_settings)
+        panel, layout = self._panel("项目设置", self.project_toggle_button)
+        self.project_panel_body = QWidget()
         grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(12)
         grid.setVerticalSpacing(10)
 
@@ -457,7 +494,6 @@ class PipelineWindow(QMainWindow):
         self.target_duration_label.setMinimumWidth(210)
         self.target_duration_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         grid.addWidget(self.target_duration_label, 4, 6, 1, 3, Qt.AlignLeft | Qt.AlignVCenter)
-        grid.setRowMinimumHeight(3, 80)
         self.inputs["target_chars"].textChanged.connect(self._update_duration_estimate)
         self._update_duration_estimate(self.inputs["target_chars"].text())
 
@@ -481,11 +517,9 @@ class PipelineWindow(QMainWindow):
         grid.setColumnStretch(3, 1)
         grid.setColumnStretch(5, 2)
         grid.setColumnStretch(8, 2)
-        layout.addLayout(grid)
-        # The workflow page can be shorter than this form's size hint. Without
-        # an explicit minimum, Qt compresses the grid rows while fixed-height
-        # editors keep their height and overlap the rows below.
-        panel.setMinimumHeight(panel.sizeHint().height())
+        self.project_panel_body.setLayout(grid)
+        layout.addWidget(self.project_panel_body)
+        panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         return panel
 
     def generate_new_topic(self) -> None:
@@ -661,6 +695,7 @@ class PipelineWindow(QMainWindow):
         self.package_source_video.editingFinished.connect(self._remember_package_source_video)
         layout.addLayout(form)
         layout.addStretch()
+        panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         return panel
 
     def _build_steps_panel(self) -> QFrame:
@@ -987,16 +1022,55 @@ class PipelineWindow(QMainWindow):
         outer.addWidget(scroll, 1)
         return page
 
-    def _panel(self, title: str) -> tuple[QFrame, QVBoxLayout]:
+    def _panel(self, title: str, header_action: QWidget | None = None) -> tuple[QFrame, QVBoxLayout]:
         panel = QFrame()
         panel.setObjectName("panel")
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(16, 14, 16, 16)
         layout.setSpacing(12)
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
         heading = QLabel(title)
         heading.setObjectName("sectionTitle")
-        layout.addWidget(heading)
+        header.addWidget(heading)
+        header.addStretch()
+        if header_action is not None:
+            header.addWidget(header_action)
+        layout.addLayout(header)
         return panel, layout
+
+    def toggle_project_settings(self) -> None:
+        self._set_project_settings_expanded(not self.project_settings_expanded)
+
+    def _set_project_settings_expanded(self, expanded: bool) -> None:
+        self.project_settings_expanded = expanded
+        if self.project_panel_body is not None:
+            self.project_panel_body.setVisible(expanded)
+        if self.project_toggle_button is not None:
+            icon = QStyle.SP_ArrowUp if expanded else QStyle.SP_ArrowDown
+            self.project_toggle_button.setIcon(self.style().standardIcon(icon))
+            self.project_toggle_button.setToolTip("收起项目设置" if expanded else "展开项目设置")
+        if self.project_settings_scroll is None or self.workflow_splitter is None:
+            return
+        self.project_settings_scroll.setMaximumHeight(16777215 if expanded else 72)
+        self.project_settings_scroll.updateGeometry()
+        self.project_settings_scroll.setMinimumHeight(150 if expanded else 72)
+        QTimer.singleShot(0, self._rebalance_workflow_splitter)
+
+    def _rebalance_workflow_splitter(self) -> None:
+        if self.workflow_splitter is None or self.project_settings_scroll is None:
+            return
+        total = max(320, self.workflow_splitter.height())
+        if self.project_settings_expanded:
+            natural_height = self.project_panel.sizeHint().height() if self.project_panel is not None else 300
+            settings_height = min(330, max(150, min(natural_height, total // 2)))
+        else:
+            settings_height = 72
+        self.workflow_splitter.setSizes([settings_height, max(240, total - settings_height)])
+
+    def _focus_workflow_view(self) -> None:
+        if self.project_settings_expanded:
+            self._set_project_settings_expanded(False)
 
     def _button(self, text: str, icon, callback, name: str = "") -> QPushButton:
         button = QPushButton(text)
@@ -1141,6 +1215,17 @@ class PipelineWindow(QMainWindow):
             draft_name = draft_name_for_orientation(base_name, orientation)
         return draft_folder, draft_name
 
+    def _remember_draft_target_for_options(self, options: Options) -> None:
+        base_name = options.draft_name.strip() or f"{safe_topic(options.topic)}_src"
+        draft_name = draft_name_for_orientation(base_name, options.orientation)
+        self._automation_draft_target = (
+            resolve_draft_folder(options.draft_folder),
+            draft_name,
+        )
+
+    def _automation_target(self) -> tuple[Path, str]:
+        return self._automation_draft_target or self._current_jianying_draft()
+
     def _start_jianying_automation(self) -> None:
         if self._jianying_automation_thread is not None and self._jianying_automation_thread.is_alive():
             QMessageBox.information(self, "正在操作剪映", "上一次剪映操作尚未完成，请稍候。")
@@ -1151,8 +1236,21 @@ class PipelineWindow(QMainWindow):
             QMessageBox.information(self, "剪映操作不可用", "第09步的剪映桌面自动化仅支持 Windows 和 macOS。")
             return
         try:
-            draft_folder, draft_name = self._current_jianying_draft()
-            draft_path = validate_draft_path(draft_folder, draft_name)
+            draft_folder, draft_name = self._automation_target()
+            try:
+                draft_path = validate_draft_path(draft_folder, draft_name)
+            except JianyingAutomationError:
+                recovered = find_timestamp_matching_draft(draft_folder, draft_name)
+                if recovered is None:
+                    raise
+                draft_path = recovered
+                draft_name = recovered.name
+                self._automation_draft_target = (draft_folder, draft_name)
+                self.log.appendPlainText(f"草稿名已按时间戳修正为：{draft_name}")
+            if draft_path.name != draft_name:
+                draft_name = draft_path.name
+                self._automation_draft_target = (draft_folder, draft_name)
+                self.log.appendPlainText(f"使用剪映实际草稿名：{draft_name}")
         except (KeyError, OSError, JianyingAutomationError) as exc:
             self._automation_last_status = "未就绪"
             self.refresh_status()
@@ -1450,6 +1548,17 @@ class PipelineWindow(QMainWindow):
             self.target_duration_label.setVisible(show_creation_fields)
         if self.topic_generate_button is not None:
             self.topic_generate_button.setVisible(show_creation_fields)
+        if self.project_panel is not None:
+            project_layout = self.project_panel.layout()
+            if project_layout is not None:
+                project_layout.activate()
+            self.project_panel.updateGeometry()
+            parent = self.project_panel.parentWidget()
+            if parent is not None and parent.layout() is not None:
+                parent.layout().activate()
+        if self.project_settings_scroll is not None:
+            self.project_settings_scroll.updateGeometry()
+            QTimer.singleShot(0, self._rebalance_workflow_splitter)
 
     def _update_primary_action(self, _index: int = 0) -> None:
         mode = self.workflow_mode.currentText() if self.workflow_mode is not None else WORKFLOW_LANDSCAPE
@@ -1582,12 +1691,15 @@ class PipelineWindow(QMainWindow):
             return
         options = reuse_completed_materials(self._read_options())
         base_name = options.draft_name.strip() or safe_topic(options.topic)
-        options = replace(options, draft_name=f"{base_name}_landscape_master")
+        landscape_name = base_name if base_name.endswith("_landscape_master") else f"{base_name}_landscape_master"
+        options = replace(options, draft_name=landscape_name)
+        self._remember_draft_target_for_options(options)
         self.log.clear()
         self._automation_last_status = "未执行"
         self._chain_portrait_after_export = True
         self._portrait_chain_attempts = 0
         self._auto_run_step09 = True
+        self._focus_workflow_view()
         self.runner.start(options)
         self.refresh_status()
 
@@ -1620,6 +1732,10 @@ class PipelineWindow(QMainWindow):
         self._remember_package_source_video()
         base_name = self.inputs["draft_name"].text().strip() or safe_topic(project.topic)
         draft_name = base_name if base_name.endswith("_portrait_package") else f"{base_name}_portrait_package"
+        self._automation_draft_target = (
+            resolve_draft_folder(self.setting_inputs["DRAFT_FOLDER"].text()),
+            draft_name,
+        )
         title = project.topic if self.package_title_checkbox.isChecked() else ""
         command = build_portrait_package_command(
             project_dir,
@@ -1636,6 +1752,7 @@ class PipelineWindow(QMainWindow):
         self._automation_last_status = "未执行"
         self._chain_portrait_after_export = False
         self._auto_run_step09 = True
+        self._focus_workflow_view()
         self.runner.start_commands(
             [("\u7ad6\u5c4f\u5305\u88c5", command)],
             portrait_package_dir(project_dir),
@@ -1657,9 +1774,12 @@ class PipelineWindow(QMainWindow):
             return
         self.log.clear()
         options = reuse_completed_materials(self._read_options())
+        if options.run_draft:
+            self._remember_draft_target_for_options(options)
         self._automation_last_status = "未执行" if options.run_draft else self._automation_last_status
         self._chain_portrait_after_export = False
         self._auto_run_step09 = options.run_draft
+        self._focus_workflow_view()
         self.runner.start(options)
         self.refresh_status()
 
@@ -1695,11 +1815,17 @@ class PipelineWindow(QMainWindow):
             run_layout=True,
             run_draft=True,
         )
+        if packaging:
+            base_name = options.draft_name.strip() or safe_topic(options.topic)
+            if not base_name.endswith("_landscape_master"):
+                options = replace(options, draft_name=f"{base_name}_landscape_master")
+        self._remember_draft_target_for_options(options)
         self.log.clear()
         self._automation_last_status = "未执行"
         self._chain_portrait_after_export = packaging and not package_stage
         self._portrait_chain_attempts = 0
         self._auto_run_step09 = True
+        self._focus_workflow_view()
         self.runner.start(options)
         self.refresh_status()
 
@@ -1722,6 +1848,7 @@ class PipelineWindow(QMainWindow):
         self._auto_run_step09 = False
         self._chain_portrait_after_export = False
         self.batch_status_label.setText(f"0/{len(options)} 准备")
+        self._focus_workflow_view()
         self.runner.start_batch(options)
         self.refresh_status()
 
@@ -1741,11 +1868,13 @@ class PipelineWindow(QMainWindow):
         )
         if key == "draft":
             self._automation_last_status = "未执行"
+            self._remember_draft_target_for_options(options)
         # Running an individual step must remain isolated.  In particular,
         # regenerating the draft should not launch Jianying automatically;
         # step 09 has its own explicit button in the workflow list.
         self._auto_run_step09 = False
         self._chain_portrait_after_export = False
+        self._focus_workflow_view()
         # The clicked workflow button is disabled when the runner starts. Move
         # focus to the log panel first so Qt does not scroll to the next
         # enabled button at the bottom of the production list.

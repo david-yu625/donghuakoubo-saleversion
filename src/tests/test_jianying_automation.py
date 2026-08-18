@@ -6,7 +6,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ..application import jianying_automation
-from ..application.jianying_automation import JianyingAutomationError, validate_draft_path
+from ..application.jianying_automation import (
+    JianyingAutomationError,
+    find_timestamp_matching_draft,
+    validate_draft_path,
+)
 
 
 class JianyingAutomationTest(unittest.TestCase):
@@ -32,6 +36,59 @@ class JianyingAutomationTest(unittest.TestCase):
             control,
         )
 
+    def test_open_draft_windows_clicks_parent_of_home_page_title(self):
+        class FakeAuto:
+            @staticmethod
+            def ControlFromHandle(_hwnd):
+                return object()
+
+        class FakeCard:
+            click_args = None
+
+            def Click(self, **kwargs):
+                self.click_args = kwargs
+
+        class FakeTitle:
+            def __init__(self, parent):
+                self.parent = parent
+
+            def GetParentControl(self):
+                return self.parent
+
+        card = FakeCard()
+        title = FakeTitle(card)
+        draft_path = Path("C:/drafts/topic_landscape(1)")
+
+        with (
+            patch.object(
+                jianying_automation,
+                "_windows_helpers",
+                return_value=(FakeAuto(), object()),
+            ),
+            patch.object(jianying_automation, "_window_handles", return_value=[123]),
+            patch.object(
+                jianying_automation,
+                "_find_named_control",
+                return_value=title,
+            ) as find_control,
+            patch.object(jianying_automation, "_activate_window"),
+        ):
+            result = jianying_automation._open_draft_windows(
+                draft_path,
+                "topic_landscape",
+                timeout=1,
+            )
+
+        self.assertEqual(result, draft_path)
+        self.assertEqual(
+            find_control.call_args.args[1],
+            (
+                "HomePageDraftTitle:topic_landscape(1)",
+                "HomePageDraftTitle:topic_landscape",
+            ),
+        )
+        self.assertEqual(card.click_args, {"simulateMove": False})
+
     def test_validate_draft_path_requires_an_existing_child_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -56,6 +113,33 @@ class JianyingAutomationTest(unittest.TestCase):
             self.assertEqual(
                 validate_draft_path(root, "demo_landscape"),
                 suffixed.resolve(),
+            )
+
+    def test_timestamp_match_recovers_draft_when_topic_changed_in_ui(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            actual = root / "新主题_20260818_210021_landscape_master_landscape(1)"
+            actual.mkdir()
+
+            self.assertEqual(
+                find_timestamp_matching_draft(
+                    root,
+                    "旧主题_20260818_210021_landscape_master_landscape",
+                ),
+                actual.resolve(),
+            )
+
+    def test_timestamp_match_does_not_guess_between_multiple_drafts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "主题一_20260818_210021_landscape").mkdir()
+            (root / "主题二_20260818_210021_landscape").mkdir()
+
+            self.assertIsNone(
+                find_timestamp_matching_draft(
+                    root,
+                    "旧主题_20260818_210021_landscape",
+                )
             )
 
     def test_macos_export_button_rect_parses_accessibility_position(self):

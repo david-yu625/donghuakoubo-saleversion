@@ -5,6 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from PIL import Image, ImageDraw
+
 from ..core.models import Box, Canvas, ElementLayout, LayoutResult
 from ..core.text_measure import resolve_font, text_width
 from ..renderers.jianying_renderer import (
@@ -38,6 +40,43 @@ from ..renderers.jianying_renderer import (
 
 
 class RendererTypographyTest(unittest.TestCase):
+    def test_render_sets_richest_image_as_draft_cover(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            project = root / "project"
+            project.mkdir()
+            plain = project / "plain.png"
+            rich = project / "rich.png"
+            Image.new("RGB", (320, 180), "white").save(plain)
+            image = Image.new("RGB", (320, 180), "black")
+            draw = ImageDraw.Draw(image)
+            for x in range(0, 320, 8):
+                draw.line((x, 0, 320 - x, 180), fill=(255, (x * 3) % 255, 40), width=4)
+            image.save(rich)
+            result = LayoutResult(
+                "cover_test",
+                Canvas(width=320, height=180),
+                [
+                    ElementLayout("background", "image", str(plain), Box(0, 0, 320, 180), 0, 1000, 1, "background"),
+                    ElementLayout("rich", "image", str(rich), Box(0, 0, 320, 180), 0, 1000, 2, "element"),
+                ],
+            )
+
+            draft_path = JianyingRenderer(project_root=root).render(
+                result,
+                draft_folder=root / "drafts",
+                draft_name="cover_test",
+            )
+
+            content = json.loads((draft_path / "draft_content.json").read_text(encoding="utf-8"))
+            metadata = json.loads((draft_path / "draft_meta_info.json").read_text(encoding="utf-8"))
+            self.assertEqual(content["cover"]["type"], "image")
+            self.assertEqual(metadata["draft_cover"], "draft_cover.jpg")
+            with Image.open(draft_path / "draft_cover.jpg") as cover:
+                self.assertEqual(cover.size, (320, 180))
+            with Image.open(draft_path / "draft_local_cover.jpg") as local_cover:
+                self.assertEqual(local_cover.size, (80, 45))
+
     def test_scene_backgrounds_are_adjacent_and_use_safe_native_transitions(self):
         elements = [
             ElementLayout(

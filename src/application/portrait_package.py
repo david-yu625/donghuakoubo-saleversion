@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from ..layouts.regions import subtitle_area
 from ..paths import portrait_package_dir
 from ..pipeline.project_reader import read_copy_lines, read_subtitles
 from ..prepare import ensure_project_background
-from ..renderers.jianying_renderer import JianyingRenderer
+from ..renderers.jianying_renderer import JianyingRenderer, select_cover_image
 from ..settings import load_render_settings
 from .project_compiler import build_subtitle_elements, without_opening_title_subtitle
 
@@ -100,6 +101,17 @@ def build_portrait_package(
             source=PORTRAIT_PACKAGE_BACKGROUND,
             size=PORTRAIT_PACKAGE_SIZE,
         )
+    cover_image = None
+    landscape_layout_path = project_dir / "layout_result.json"
+    if landscape_layout_path.is_file():
+        try:
+            landscape_layout = LayoutResult.from_dict(
+                json.loads(landscape_layout_path.read_text(encoding="utf-8-sig"))
+            )
+            cover_image = select_cover_image(landscape_layout, project_dir)
+        except (OSError, ValueError, json.JSONDecodeError):
+            # A missing or stale landscape layout must not block packaging.
+            cover_image = None
     path = JianyingRenderer(project_root=PROJECT_ROOT).render(
         layout,
         draft_folder=draft_folder,
@@ -116,6 +128,7 @@ def build_portrait_package(
         title_color="#FFFFFF",
         title_background_color=settings.title_background_color,
         extra_hold_ms=0,
+        cover_image=cover_image,
         replace=replace,
     )
     return PortraitPackageResult(

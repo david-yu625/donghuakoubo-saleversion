@@ -101,6 +101,26 @@ def validate_draft_path(draft_folder: str | Path, draft_name: str) -> Path:
     raise JianyingAutomationError(f"找不到剪映草稿：{draft_path}")
 
 
+def find_timestamp_matching_draft(draft_folder: str | Path, requested_name: str) -> Path | None:
+    """Recover a renamed draft using its unique creation timestamp and stage suffix."""
+    folder = Path(draft_folder).expanduser().resolve()
+    name = requested_name.strip()
+    timestamp = re.search(r"(?<!\d)(20\d{6}_\d{6})(?!\d)", name)
+    if not timestamp or not folder.is_dir():
+        return None
+    stage_suffix = name[timestamp.end():]
+    if not stage_suffix:
+        return None
+    matches = []
+    for child in folder.iterdir():
+        if not child.is_dir() or timestamp.group(1) not in child.name:
+            continue
+        normalized_name = re.sub(r"\(\d+\)$", "", child.name)
+        if normalized_name.endswith(stage_suffix):
+            matches.append(child.resolve())
+    return matches[0] if len(matches) == 1 else None
+
+
 def find_jianying_executable() -> Path:
     """Find the installed Windows Jianying executable without hardcoding a version."""
     local_app_data = Path(os.environ.get("LOCALAPPDATA", ""))
@@ -275,15 +295,22 @@ def _open_draft_windows(draft_path: Path, draft_name: str, *, timeout: float) ->
         raise JianyingAutomationError("无法连接到剪映主窗口")
     _activate_window(hwnd, window_api)
 
-    # Jianying exposes project cards as UIA controls on supported versions.
-    # We require an exact name match so a similarly named project is never opened.
-    card = _find_named_control(window, (draft_name.strip(),), timeout=timeout)
-    if card is None:
+    # Jianying exposes the title through UIA_FullDescriptionPropertyId rather
+    # than Name. The title's parent is the clickable project card.
+    ui_names = tuple(dict.fromkeys((draft_path.name, draft_name.strip())))
+    title_descriptions = tuple(f"HomePageDraftTitle:{name}" for name in ui_names)
+    title_control = _find_named_control(window, title_descriptions, timeout=timeout)
+    if title_control is None:
         raise JianyingAutomationError(
             f"剪映中没有找到名为“{draft_name.strip()}”的草稿，请先在项目首页刷新列表"
         )
     try:
-        card.DoubleClick()
+        card = title_control.GetParentControl()
+        if card is None:
+            raise JianyingAutomationError("无法定位剪映草稿卡片")
+        card.Click(simulateMove=False)
+    except JianyingAutomationError:
+        raise
     except Exception as exc:
         raise JianyingAutomationError(f"打开草稿失败：{exc}") from exc
     return draft_path

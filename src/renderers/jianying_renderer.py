@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw, ImageOps, ImageStat
 
 from ..core.geometry import normalized_center
 from ..core.models import Box, ElementLayout, LayoutResult, Theme
@@ -59,6 +59,7 @@ SCENE_BACKGROUND_TRACK = "scene_backgrounds"
 BACKGROUND_MUSIC_VOLUME = 0.14
 BACKGROUND_TRACK_RELATIVE_INDEX = -100
 SCENE_TRANSITION_DURATION_MS = 450
+COVER_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 # Subtle, free transitions suited to a whiteboard sequence. Resource ids are
 # stable even when the vendored enum source is decoded with a different locale.
 class SceneTransitionEffect(str, Enum):
@@ -80,6 +81,57 @@ def parse_hex_color(value: str) -> tuple[float, float, float]:
     if len(raw) != 6:
         return 1.0, 1.0, 1.0
     return tuple(int(raw[index : index + 2], 16) / 255 for index in (0, 2, 4))
+
+
+def _image_richness(path: Path) -> float:
+    """Estimate visual information so plain background plates are not chosen."""
+    try:
+        with Image.open(path) as source:
+            image = ImageOps.exif_transpose(source).convert("RGB")
+            image.thumbnail((96, 96), Image.Resampling.BILINEAR)
+            if image.width < 2 or image.height < 2:
+                return 0.0
+            channel_variation = sum(ImageStat.Stat(image).stddev) / 3.0
+            gray = image.convert("L")
+            width, height = gray.size
+            horizontal = ImageChops.difference(
+                gray.crop((1, 0, width, height)),
+                gray.crop((0, 0, width - 1, height)),
+            )
+            vertical = ImageChops.difference(
+                gray.crop((0, 1, width, height)),
+                gray.crop((0, 0, width, height - 1)),
+            )
+            edge_variation = (
+                ImageStat.Stat(horizontal).mean[0]
+                + ImageStat.Stat(vertical).mean[0]
+            ) / 2.0
+            return channel_variation + edge_variation * 2.0
+    except (OSError, ValueError):
+        return 0.0
+
+
+def select_cover_image(result: LayoutResult, project_root: Path) -> Path | None:
+    """Select the most visually information-dense image in a layout."""
+    candidate_roles: dict[Path, bool] = {}
+    for element in result.elements:
+        if element.element_type != "image":
+            continue
+        path = Path(element.content).expanduser()
+        if not path.is_absolute():
+            path = project_root / path
+        path = path.resolve()
+        if path.suffix.lower() not in COVER_IMAGE_EXTENSIONS or not path.is_file():
+            continue
+        candidate_roles[path] = candidate_roles.get(path, False) or element.role != "background"
+    candidates = [
+        (_image_richness(path), path, is_foreground)
+        for path, is_foreground in candidate_roles.items()
+    ]
+    if not candidates:
+        return None
+    foreground = [item for item in candidates if item[2]]
+    return max(foreground or candidates, key=lambda item: item[0])[1]
 
 
 def text_style_size(font_size: int, role: str) -> float:
@@ -689,6 +741,7 @@ class JianyingRenderer:
         title_color: str = DEFAULT_TITLE_COLOR,
         title_background_color: str = DEFAULT_TITLE_BACKGROUND_COLOR,
         extra_hold_ms: int = FINAL_HOLD_MS,
+        cover_image: Path | None = None,
         replace: bool = False,
     ) -> Path:
         draft_folder = draft_folder.expanduser().resolve()
@@ -872,8 +925,48 @@ class JianyingRenderer:
             segment = self._make_segment(element, result)
             script.add_segment(segment, track_name)
 
+        draft_path = draft_folder / draft_name
+        cover_source = (
+            self._resolve_path(cover_image)
+            if cover_image is not None
+            else select_cover_image(result, self.project_root)
+        )
+        if cover_source is not None and cover_source.is_file():
+            cover_asset = self._prepare_cover_asset(
+                cover_source,
+                draft_path,
+                result.canvas.width,
+                result.canvas.height,
+            )
+            script.set_cover_image(str(cover_asset))
         script.save()
-        return draft_folder / draft_name
+        return draft_path
+
+    def _prepare_cover_asset(
+        self,
+        source: Path,
+        draft_path: Path,
+        width: int,
+        height: int,
+    ) -> Path:
+        """Create the two local cover sizes expected by the Jianying index."""
+        draft_path.mkdir(parents=True, exist_ok=True)
+        with Image.open(source) as opened:
+            image = ImageOps.exif_transpose(opened).convert("RGB")
+            cover = ImageOps.fit(
+                image,
+                (max(1, width), max(1, height)),
+                method=Image.Resampling.LANCZOS,
+                centering=(0.5, 0.5),
+            )
+            cover_path = draft_path / "draft_cover.jpg"
+            cover.save(cover_path, format="JPEG", quality=95, optimize=True)
+            local_path = draft_path / "draft_local_cover.jpg"
+            cover.resize(
+                (max(1, width // 4), max(1, height // 4)),
+                Image.Resampling.LANCZOS,
+            ).save(local_path, format="JPEG", quality=90, optimize=True)
+        return cover_path
 
     def _add_background_music(self, script, path: Path, total_duration_ms: int) -> None:
         path = self._resolve_path(path)
