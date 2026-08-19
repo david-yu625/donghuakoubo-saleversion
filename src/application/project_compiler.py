@@ -54,7 +54,7 @@ def compile_project(
         subtitle_background_color=settings.subtitle_background_color,
     ), canvas=canvas_for_orientation(orientation))
     if include_subtitles is None:
-        include_subtitles = engine.canvas.width <= engine.canvas.height
+        include_subtitles = True
     rendered: list[tuple[PreparedScene, LayoutResult]] = []
     previous_keyword_color = ""
     for scene in scenes:
@@ -171,6 +171,8 @@ def build_subtitle_elements(
                 "semantic_chunk_index": chunk_index,
                 "semantic_chunk_count": len(chunks),
             }
+            if landscape:
+                metadata["jianying_text_size"] = 5.0
             if decision:
                 metadata["subtitle_decision"] = decision
             elements.append(ElementLayout(

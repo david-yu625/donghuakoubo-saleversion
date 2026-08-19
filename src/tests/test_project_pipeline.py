@@ -99,7 +99,10 @@ class ProjectPipelineTest(unittest.TestCase):
                 self.assertLessEqual(element.box.right, landscape_result.canvas.width)
                 self.assertLessEqual(element.box.bottom, landscape_result.canvas.height)
             landscape_subtitles = [element for element in landscape_result.elements if element.role == "subtitle"]
-            self.assertEqual(landscape_subtitles, [])
+            self.assertTrue(landscape_subtitles)
+            self.assertTrue(all(abs(element.box.center_y - 1017) <= 0.5 for element in landscape_subtitles))
+            self.assertTrue(all(len(element.lines) == 1 for element in landscape_subtitles))
+            self.assertTrue(all(element.metadata["jianying_text_size"] == 5.0 for element in landscape_subtitles))
 
 
 def write_csv(path: Path, fieldnames: list[str], rows: list[list[str]]) -> None:

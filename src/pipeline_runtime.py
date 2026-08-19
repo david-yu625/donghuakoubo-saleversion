@@ -626,7 +626,9 @@ def build_commands(options: Options) -> tuple[list[tuple[str, list[str]]], Path]
             "--layout",
             str(layout_json),
             "--title",
-            topic if options.include_title else "",
+            topic
+            if options.include_title and orientation_key(options.orientation) != "landscape"
+            else "",
             "--draft-folder",
             draft_folder,
             "--draft-name",

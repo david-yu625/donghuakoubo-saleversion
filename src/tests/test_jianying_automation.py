@@ -179,7 +179,14 @@ class JianyingAutomationTest(unittest.TestCase):
                 "_macos_export_panel_open",
                 return_value=True,
             ),
-            patch.object(jianying_automation, "_macos_export_state", return_value="complete"),
+            patch.object(
+                jianying_automation,
+                "_macos_export_state",
+                side_effect=(
+                    jianying_automation.JianyingAutomationError("temporary AX timeout"),
+                    "complete",
+                ),
+            ),
             patch.object(
                 jianying_automation,
                 "_macos_confirm_exit_button_rect",
@@ -207,6 +214,22 @@ class JianyingAutomationTest(unittest.TestCase):
         self.assertEqual(clicks[4], (108.0, 248.0, {}))
         self.assertEqual(clicks[5], (1002.0, 511.0, {}))
         quit_application.assert_called_once_with(timeout=10.0)
+
+    def test_macos_export_path_reads_top_level_static_text(self):
+        export_path = "/Users/test/Desktop/videos/topic.mp4"
+        with patch.object(
+            jianying_automation,
+            "_run_macos_osascript",
+            return_value=export_path,
+        ) as run_script:
+            self.assertEqual(
+                jianying_automation._macos_export_path(timeout=1),
+                Path(export_path),
+            )
+
+        script = run_script.call_args.args[0]
+        self.assertIn("static texts of w", script)
+        self.assertNotIn("entire contents of w", script)
 
     def test_parse_export_path_rejects_non_path_accessibility_values(self):
         self.assertEqual(

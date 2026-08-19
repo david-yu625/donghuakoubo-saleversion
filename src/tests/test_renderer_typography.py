@@ -96,7 +96,7 @@ class RendererTypographyTest(unittest.TestCase):
         self.assertEqual(normalized[0].metadata["video_intro"], "intro")
         self.assertNotIn("video_intro", normalized[1].metadata)
         self.assertNotIn("scene_transition", normalized[1].metadata)
-        self.assertEqual(SCENE_TRANSITION_DURATION_MS, 450)
+        self.assertEqual(SCENE_TRANSITION_DURATION_MS, 900)
         for index, resource_id in enumerate(SCENE_TRANSITION_RESOURCE_IDS):
             transition = scene_transition_for_index(index)
             self.assertEqual(str(transition.value.resource_id), resource_id)
@@ -345,6 +345,18 @@ class RendererTypographyTest(unittest.TestCase):
 
         self.assertEqual(segment.background.width, SUBTITLE_BACKGROUND_WIDTH)
         self.assertEqual(segment.background.height, SUBTITLE_BACKGROUND_HEIGHT)
+
+    def test_subtitle_can_override_jianying_text_size(self):
+        result = LayoutResult("test", Canvas(width=1920, height=1080), [])
+        element = ElementLayout(
+            "subtitle", "text", "横版字幕", Box(64, 980, 1792, 40), 0, 1000,
+            1000, "subtitle", 32, ("横版字幕",),
+            metadata={"jianying_text_size": 5.0},
+        )
+
+        segment = JianyingRenderer()._make_segment(element, result)
+
+        self.assertEqual(segment.style.size, 5.0)
 
     def test_long_global_title_wraps_and_fits_inside_bar(self):
         presentation = global_title_presentation("GPU为什么适合训练AI？它和CPU到底差在哪")

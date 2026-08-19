@@ -168,6 +168,9 @@ QPushButton:pressed { background: #1f242c; }
 QPushButton:disabled { color: #5d6571; background: #1b1e24; border-color: #262a31; }
 QPushButton#primary { color: #ffffff; background: #3978e6; border-color: #3978e6; font-weight: 600; }
 QPushButton#primary:hover { background: #4f8cff; border-color: #4f8cff; }
+QPushButton#primary:disabled {
+    color: #5d6571; background: #1b1e24; border-color: #262a31;
+}
 QPushButton#danger { color: #ff9b91; background: transparent; border-color: #4b3030; }
 QPushButton#danger:hover { color: #ffffff; background: #702c2c; border-color: #8c3b3b; }
 QPlainTextEdit {
@@ -291,6 +294,9 @@ class PipelineWindow(QMainWindow):
         self._chain_portrait_after_export = False
         self._portrait_chain_attempts = 0
         self._last_jianying_export_path: Path | None = None
+        self._batch_package_options: list[Options] = []
+        self._batch_package_index = -1
+        self._batch_package_phase = ""
         self.continue_button: QPushButton | None = None
         self.workflow_mode: QComboBox | None = None
         self.workflow_tabs: QTabWidget | None = None
@@ -460,16 +466,25 @@ class PipelineWindow(QMainWindow):
         self.project_labels["topic"] = topic_label
         grid.addWidget(topic_label, 2, 0)
         self.inputs["topic"] = QLineEdit("什么是知识传递")
-        grid.addWidget(self.inputs["topic"], 2, 1, 1, 8)
+        grid.addWidget(self.inputs["topic"], 2, 1, 1, 4)
+
+        target_chars_label = QLabel("最长字数")
+        self.project_labels["target_chars"] = target_chars_label
+        self.inputs["target_chars"] = QLineEdit("500")
+        self.inputs["target_chars"].setFixedWidth(72)
+        target_chars_group = QWidget()
+        target_chars_layout = QHBoxLayout(target_chars_group)
+        target_chars_layout.setContentsMargins(0, 0, 0, 0)
+        target_chars_layout.setSpacing(8)
+        target_chars_layout.addWidget(target_chars_label)
+        target_chars_layout.addWidget(self.inputs["target_chars"])
 
         context_label = QLabel("上下文 / 行文思路")
         self.project_labels["context"] = context_label
         grid.addWidget(context_label, 3, 0, Qt.AlignTop)
         self.context_input = QPlainTextEdit()
         self.context_input.setObjectName("contextInput")
-        # The context is a real multi-line brief, so reserve enough vertical
-        # space for the label, placeholder and at least several input lines.
-        self.context_input.setFixedHeight(80)
+        self.context_input.setFixedHeight(40)
         self.context_input.setPlaceholderText(
             "例如：‘养龙虾’指用人工智能生成养殖方案，不是现实养殖；重点讲清概念区别。"
         )
@@ -477,9 +492,7 @@ class PipelineWindow(QMainWindow):
         grid.addWidget(self.context_input, 3, 1, 1, 8)
 
         settings = (
-            ("故事载体", "story_world", "自动选择", 4, 0, 1, 3),
-            ("最长字数", "target_chars", "500", 4, 4, 5, 1),
-            ("草稿名", "draft_name", f"什么是知识传递_{self.draft_timestamp}", 5, 0, 1, 4),
+            ("草稿名", "draft_name", f"什么是知识传递_{self.draft_timestamp}", 4, 0, 1, 7),
         )
         for label, key, value, row, label_column, field_column, field_span in settings:
             field_label = QLabel(label)
@@ -491,31 +504,32 @@ class PipelineWindow(QMainWindow):
         self.target_duration_label = QLabel()
         self.target_duration_label.setObjectName("muted")
         self.target_duration_label.setWordWrap(False)
-        self.target_duration_label.setMinimumWidth(210)
+        self.target_duration_label.setMinimumWidth(180)
         self.target_duration_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        grid.addWidget(self.target_duration_label, 4, 6, 1, 3, Qt.AlignLeft | Qt.AlignVCenter)
+        target_chars_layout.addWidget(self.target_duration_label, 1, Qt.AlignLeft | Qt.AlignVCenter)
+        grid.addWidget(target_chars_group, 2, 5, 1, 4)
         self.inputs["target_chars"].textChanged.connect(self._update_duration_estimate)
         self._update_duration_estimate(self.inputs["target_chars"].text())
 
         self.inputs["topic"].textChanged.connect(self._update_automatic_draft_name)
         self.inputs["topic"].textChanged.connect(self._update_package_project_label)
         self.inputs["draft_name"].textEdited.connect(self._mark_draft_name_custom)
-        grid.addWidget(QLabel("批量主题"), 6, 0)
+        grid.addWidget(QLabel("批量主题"), 5, 0)
         self.batch_topics = QPlainTextEdit()
         self.batch_topics.setObjectName("batchTopics")
         self.batch_topics.setFixedHeight(64)
         self.batch_topics.setPlaceholderText("每行输入一个主题")
         self.batch_topics.setToolTip("批量执行时按行读取主题，空行和重复主题会被忽略")
         self.batch_topics.textChanged.connect(self._update_batch_topic_count)
-        grid.addWidget(self.batch_topics, 6, 1, 1, 7)
+        grid.addWidget(self.batch_topics, 5, 1, 1, 7)
         self.batch_status_label = QLabel("0 个主题")
         self.batch_status_label.setObjectName("muted")
         self.batch_status_label.setAlignment(Qt.AlignCenter)
-        grid.addWidget(self.batch_status_label, 6, 8)
-        self.batch_topic_label = grid.itemAtPosition(6, 0).widget()
+        grid.addWidget(self.batch_status_label, 5, 8)
+        self.batch_topic_label = grid.itemAtPosition(5, 0).widget()
         grid.setColumnStretch(1, 2)
         grid.setColumnStretch(3, 1)
-        grid.setColumnStretch(5, 2)
+        grid.setColumnStretch(5, 0)
         grid.setColumnStretch(8, 2)
         self.project_panel_body.setLayout(grid)
         layout.addWidget(self.project_panel_body)
@@ -727,7 +741,6 @@ class PipelineWindow(QMainWindow):
                     action,
                     QStyle.SP_ArrowForward,
                     self.run_automation_step,
-                    "primary",
                 )
                 run.setToolTip("打开当前剪映草稿并点击导出（支持 Windows 和 macOS）")
                 self.automation_step_button = run
@@ -1203,13 +1216,24 @@ class PipelineWindow(QMainWindow):
         )
         package_stage = package_mode and self.workflow_tabs is not None and self.workflow_tabs.currentIndex() == 1
         landscape_master = package_mode and not package_stage
-        base_name = self.inputs["draft_name"].text().strip() or safe_topic(self.inputs["topic"].text())
+        requested_base_name = self.inputs["draft_name"].text().strip() or safe_topic(self.inputs["topic"].text())
+        base_name = requested_base_name
         if package_stage:
             draft_name = base_name if base_name.endswith("_portrait_package") else f"{base_name}_portrait_package"
         elif landscape_master:
             base_name = base_name if base_name.endswith("_landscape_master") else f"{base_name}_landscape_master"
             orientation = self.setting_combos["VIDEO_ORIENTATION"].currentText()
             draft_name = draft_name_for_orientation(base_name, orientation)
+            # Older single-step runs created the landscape draft without the
+            # workflow marker. Keep those drafts exportable after upgrading.
+            if not (draft_folder / draft_name).is_dir():
+                legacy_name = draft_name_for_orientation(requested_base_name, orientation)
+                try:
+                    validate_draft_path(draft_folder, legacy_name)
+                except JianyingAutomationError:
+                    pass
+                else:
+                    draft_name = legacy_name
         else:
             orientation = self.setting_combos["VIDEO_ORIENTATION"].currentText()
             draft_name = draft_name_for_orientation(base_name, orientation)
@@ -1295,6 +1319,8 @@ class PipelineWindow(QMainWindow):
         self.log.appendPlainText(message)
         if self._chain_portrait_after_export:
             QTimer.singleShot(0, self._continue_portrait_package_after_export)
+        elif self._batch_package_phase == "portrait":
+            QTimer.singleShot(0, self._wait_for_portrait_batch_export)
         self.refresh_status()
 
     def _continue_portrait_package_after_export(self) -> None:
@@ -1309,18 +1335,12 @@ class PipelineWindow(QMainWindow):
             return
 
         self._portrait_chain_attempts += 1
-        if self._portrait_chain_attempts > 40:
-            self._chain_portrait_after_export = False
-            message = "横版已导出，但在 40 秒内没有找到剪映导出路径对应的 MP4，竖版包装未启动。"
-            self.log.appendPlainText(message)
-            QMessageBox.warning(self, "未找到横版导出视频", message)
-            return
-
         topic = self.inputs["topic"].text().strip()
         projects = discover_landscape_projects(OUTPUT_ROOT)
         project = next((item for item in projects if item.topic == topic), None)
         if project is None:
-            self.log.appendPlainText("等待横版项目写入完成，准备查找导出视频…")
+            if self._portrait_chain_attempts == 1 or self._portrait_chain_attempts % 30 == 0:
+                self.log.appendPlainText("等待横版项目写入完成，准备查找导出视频…")
             QTimer.singleShot(1000, self._continue_portrait_package_after_export)
             return
 
@@ -1336,7 +1356,7 @@ class PipelineWindow(QMainWindow):
         except OSError:
             source_is_fresh = False
         if not source_is_fresh:
-            if self._portrait_chain_attempts == 1:
+            if self._portrait_chain_attempts == 1 or self._portrait_chain_attempts % 30 == 0:
                 self.log.appendPlainText("横版导出已完成，等待指定 MP4 文件落盘…")
             QTimer.singleShot(1000, self._continue_portrait_package_after_export)
             return
@@ -1360,15 +1380,116 @@ class PipelineWindow(QMainWindow):
         self._remember_package_source_video()
         self._chain_portrait_after_export = False
         self._portrait_chain_attempts = 0
+        if self._batch_package_options:
+            current = self._batch_package_options[self._batch_package_index]
+            self.draft_name_is_automatic = False
+            self.inputs["draft_name"].setText(current.draft_name)
+            self._batch_package_phase = "portrait"
+            self._last_jianying_export_path = None
+            self._portrait_chain_attempts = 0
+            self.batch_status_label.setText(
+                f"{self._batch_package_index + 1}/{len(self._batch_package_options)} 竖版包装"
+            )
         if self.workflow_tabs is not None:
             self.workflow_tabs.setCurrentIndex(1)
         self.log.appendPlainText(f"已找到横版 MP4：{source}")
         self.log.appendPlainText("开始串联竖版包装…")
         self.run_portrait_package(clear_log=False)
 
+    def _start_portrait_batch_item(self) -> None:
+        if not self._batch_package_options:
+            return
+        if self._batch_package_index < 0 or self._batch_package_index >= len(self._batch_package_options):
+            self._clear_portrait_batch()
+            return
+        options = self._batch_package_options[self._batch_package_index]
+        self.draft_name_is_automatic = False
+        self.inputs["topic"].setText(options.topic)
+        self.inputs["draft_name"].setText(options.draft_name)
+        self._remember_draft_target_for_options(options)
+        self._automation_last_status = "未执行"
+        self._chain_portrait_after_export = True
+        self._portrait_chain_attempts = 0
+        self._batch_package_phase = "landscape"
+        self._auto_run_step09 = True
+        if self.workflow_tabs is not None:
+            self.workflow_tabs.setCurrentIndex(0)
+        self.batch_status_label.setText(
+            f"{self._batch_package_index + 1}/{len(self._batch_package_options)} 横版母片"
+        )
+        self.runner.start(options)
+
+    def _wait_for_portrait_batch_export(self) -> None:
+        """Advance only after the final portrait MP4 is present on disk."""
+        if not self._batch_package_options or self._batch_package_phase != "portrait":
+            return
+        if self.runner.running or (
+            self._jianying_automation_thread is not None
+            and self._jianying_automation_thread.is_alive()
+        ):
+            QTimer.singleShot(250, self._wait_for_portrait_batch_export)
+            return
+
+        self._portrait_chain_attempts += 1
+        export_path = self._last_jianying_export_path
+        if export_path is None:
+            message = "竖版包装已完成，但剪映没有返回最终 MP4 的导出路径，批量任务已停止。"
+            self._clear_portrait_batch()
+            self.log.appendPlainText(message)
+            QMessageBox.warning(self, "未读取到竖版导出路径", message)
+            return
+
+        if export_path.suffix.lower() != ".mp4":
+            message = f"竖版包装导出路径不是 MP4：{export_path}，批量任务已停止。"
+            self._clear_portrait_batch()
+            self.log.appendPlainText(message)
+            QMessageBox.warning(self, "导出格式不正确", message)
+            return
+
+        try:
+            export_ready = export_path.is_file()
+        except OSError:
+            export_ready = False
+        if export_ready:
+            self.log.appendPlainText(f"竖版最终 MP4 已导出：{export_path}")
+            self._advance_portrait_batch()
+            return
+
+        if self._portrait_chain_attempts == 1 or self._portrait_chain_attempts % 30 == 0:
+            self.log.appendPlainText(f"等待竖版最终 MP4 落盘：{export_path}")
+        QTimer.singleShot(1000, self._wait_for_portrait_batch_export)
+
+    def _advance_portrait_batch(self) -> None:
+        if not self._batch_package_options:
+            return
+        if self.runner.running or (
+            self._jianying_automation_thread is not None
+            and self._jianying_automation_thread.is_alive()
+        ):
+            QTimer.singleShot(100, self._advance_portrait_batch)
+            return
+        completed_topic = self._batch_package_options[self._batch_package_index].topic
+        self._batch_package_index += 1
+        if self._batch_package_index >= len(self._batch_package_options):
+            total = len(self._batch_package_options)
+            self.batch_status_label.setText(f"成功 {total}/{total}")
+            self.log.appendPlainText(f"横版母片转竖版批量任务完成：成功 {total}/{total}")
+            self._clear_portrait_batch()
+            self.refresh_status()
+            return
+        self.log.appendPlainText(f"主题完成：{completed_topic}，开始下一个主题。")
+        self._start_portrait_batch_item()
+        self.refresh_status()
+
+    def _clear_portrait_batch(self) -> None:
+        self._batch_package_options = []
+        self._batch_package_index = -1
+        self._batch_package_phase = ""
+
     def _on_jianying_automation_failed(self, message: str) -> None:
         self._automation_last_status = "失败"
         self._chain_portrait_after_export = False
+        self._clear_portrait_batch()
         self._set_jianying_automation_enabled(True)
         self.log.appendPlainText(f"剪映操作失败：{message}")
         QMessageBox.warning(self, "剪映操作失败", message)
@@ -1485,7 +1606,7 @@ class PipelineWindow(QMainWindow):
         clean_landscape_master = mode == WORKFLOW_PORTRAIT_PACKAGE
         return Options(
             topic=self.inputs["topic"].text().strip(),
-            story_world=self.inputs["story_world"].text().strip(),
+            story_world="",
             target_chars=self.inputs["target_chars"].text().strip(),
             context=self.context_input.toPlainText().strip() if self.context_input is not None else "",
             image_model=self.image_model_setting.currentText().strip(),
@@ -1498,7 +1619,7 @@ class PipelineWindow(QMainWindow):
             background_music=self.setting_inputs["BACKGROUND_MUSIC"].text().strip(),
             background_image=self.setting_inputs["BACKGROUND_IMAGE"].text().strip(),
             include_background=not (self.background_black_checkbox is not None and self.background_black_checkbox.isChecked()),
-            include_title=not clean_landscape_master,
+            include_title=self._workflow_orientation() != "\u6a2a\u5c4f",
             include_subtitles=not clean_landscape_master,
         )
 
@@ -1514,13 +1635,13 @@ class PipelineWindow(QMainWindow):
         if orientation_combo is not None:
             orientation_combo.setCurrentText(self._workflow_orientation())
         self._update_primary_action()
-        self.batch_button.setVisible(not packaging)
+        self.batch_button.setVisible(True)
         if self.batch_topic_label is not None:
-            self.batch_topic_label.setVisible(not packaging)
+            self.batch_topic_label.setVisible(True)
         if self.batch_topic_generate_button is not None:
-            self.batch_topic_generate_button.setVisible(not packaging)
-        self.batch_topics.setVisible(not packaging)
-        self.batch_status_label.setVisible(not packaging)
+            self.batch_topic_generate_button.setVisible(True)
+        self.batch_topics.setVisible(True)
+        self.batch_status_label.setVisible(True)
         self._update_project_fields_for_stage()
         if not packaging:
             self._update_package_project_label()
@@ -1533,14 +1654,8 @@ class PipelineWindow(QMainWindow):
             self.refresh_landscape_projects()
 
     def _update_project_fields_for_stage(self) -> None:
-        mode = self.workflow_mode.currentText() if self.workflow_mode is not None else WORKFLOW_LANDSCAPE
-        package_stage = (
-            mode == WORKFLOW_PORTRAIT_PACKAGE
-            and self.workflow_tabs is not None
-            and self.workflow_tabs.currentIndex() == 1
-        )
-        show_creation_fields = not package_stage
-        for key in ("topic_direction", "topic", "context", "story_world", "target_chars"):
+        show_creation_fields = True
+        for key in ("topic_direction", "topic", "context", "target_chars"):
             self.project_labels[key].setVisible(show_creation_fields)
             widget = self.context_input if key == "context" else self.inputs[key]
             widget.setVisible(show_creation_fields)
@@ -1847,9 +1962,38 @@ class PipelineWindow(QMainWindow):
         self.log.clear()
         self._auto_run_step09 = False
         self._chain_portrait_after_export = False
-        self.batch_status_label.setText(f"0/{len(options)} 准备")
         self._focus_workflow_view()
-        self.runner.start_batch(options)
+        packaging = (
+            self.workflow_mode is not None
+            and self.workflow_mode.currentText() == WORKFLOW_PORTRAIT_PACKAGE
+        )
+        if packaging:
+            if os.name != "nt" and sys.platform != "darwin":
+                QMessageBox.warning(
+                    self,
+                    "批量串联不可用",
+                    "横版母片转竖版的批量串联需要 Windows 或 macOS 上的剪映桌面自动化。",
+                )
+                return
+            self._batch_package_options = [
+                replace(
+                    item,
+                    draft_name=(
+                        item.draft_name
+                        if item.draft_name.endswith("_landscape_master")
+                        else f"{item.draft_name}_landscape_master"
+                    ),
+                )
+                for item in options
+            ]
+            self._batch_package_index = 0
+            self._batch_package_phase = "landscape"
+            self.log.appendPlainText(f"横版母片转竖版批量任务开始，共 {len(options)} 个主题")
+            self._start_portrait_batch_item()
+        else:
+            self._clear_portrait_batch()
+            self.batch_status_label.setText(f"0/{len(options)} 准备")
+            self.runner.start_batch(options)
         self.refresh_status()
 
     def run_single_step(self, key: str, *, overwrite_images: bool = False) -> None:
@@ -1867,6 +2011,19 @@ class PipelineWindow(QMainWindow):
             run_draft=key == "draft", overwrite_images=key == "images" and overwrite_images,
         )
         if key == "draft":
+            package_mode = (
+                self.workflow_mode is not None
+                and self.workflow_mode.currentText() == WORKFLOW_PORTRAIT_PACKAGE
+            )
+            package_stage = package_mode and self.workflow_tabs is not None and self.workflow_tabs.currentIndex() == 1
+            if package_mode and not package_stage:
+                base_name = options.draft_name.strip() or safe_topic(options.topic)
+                landscape_name = (
+                    base_name
+                    if base_name.endswith("_landscape_master")
+                    else f"{base_name}_landscape_master"
+                )
+                options = replace(options, draft_name=landscape_name)
             self._automation_last_status = "未执行"
             self._remember_draft_target_for_options(options)
         # Running an individual step must remain isolated.  In particular,
@@ -1898,6 +2055,9 @@ class PipelineWindow(QMainWindow):
                 elif text in {"失败", "已停止", "部分失败"}:
                     self._auto_run_step09 = False
                     self._chain_portrait_after_export = False
+                    if self._batch_package_options:
+                        self.log.appendPlainText(f"批量串联已停止：{text}")
+                        self._clear_portrait_batch()
         self.refresh_status()
 
     def _run_automation_when_idle(self) -> None:

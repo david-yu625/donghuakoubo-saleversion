@@ -12,7 +12,7 @@ from ..application.project_compiler import (
     subtitle_display_width,
     without_opening_title_subtitle,
 )
-from ..core.models import LayoutResult
+from ..core.models import LayoutResult, canvas_for_orientation
 from ..layouts.engine import LayoutEngine
 from ..renderers.jianying_renderer import JianyingRenderer, NARRATION_SUBTITLE_TRACK
 
@@ -68,6 +68,18 @@ class SemanticSubtitleTest(unittest.TestCase):
         self.assertTrue(all(element.lines[0] == element.content for element in elements))
         ordered = sorted(elements, key=lambda element: element.start_ms)
         self.assertTrue(all(left.end_ms <= right.start_ms for left, right in zip(ordered, ordered[1:])))
+
+    def test_landscape_subtitles_sit_just_above_the_bottom_edge(self):
+        engine = LayoutEngine(canvas=canvas_for_orientation("landscape"))
+        elements = build_subtitle_elements([
+            ("横版字幕位于画面下方安全区域", 0, 2000),
+        ], engine)
+
+        self.assertEqual(len(elements), 1)
+        self.assertAlmostEqual(elements[0].box.center_y, 1017, delta=0.5)
+        self.assertEqual(elements[0].font_size, 32)
+        self.assertEqual(elements[0].metadata["jianying_text_size"], 5.0)
+        self.assertLessEqual(elements[0].box.bottom, 1080 - 32)
 
     def test_opening_title_row_is_removed_from_narration_subtitles(self):
         rows = [

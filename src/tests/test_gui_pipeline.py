@@ -241,7 +241,7 @@ class GuiPipelineTest(unittest.TestCase):
         ))
         self.assertNotIn("06 图片", [label for label, _ in commands])
 
-    def test_direct_video_includes_title_and_subtitles(self):
+    def test_direct_landscape_video_omits_title_but_keeps_subtitles(self):
         commands, _ = build_commands(Options(
             topic="Topic",
             story_world="",
@@ -255,6 +255,18 @@ class GuiPipelineTest(unittest.TestCase):
 
         self.assertIn("--subtitles", layout_command)
         self.assertNotIn("--no-subtitles", layout_command)
+        self.assertEqual(draft_command[draft_command.index("--title") + 1], "")
+
+    def test_direct_portrait_video_keeps_title(self):
+        commands, _ = build_commands(Options(
+            topic="Topic",
+            story_world="",
+            target_chars="0",
+            orientation="portrait",
+            include_title=True,
+        ))
+        draft_command = next(command for _, command in commands if "src.08_generate_jianying_draft" in command)
+
         self.assertEqual(draft_command[draft_command.index("--title") + 1], "Topic")
 
     def test_landscape_master_omits_title_and_subtitles(self):

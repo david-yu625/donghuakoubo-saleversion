@@ -58,7 +58,7 @@ NARRATION_SUBTITLE_TRACK = "narration_subtitles"
 SCENE_BACKGROUND_TRACK = "scene_backgrounds"
 BACKGROUND_MUSIC_VOLUME = 0.14
 BACKGROUND_TRACK_RELATIVE_INDEX = -100
-SCENE_TRANSITION_DURATION_MS = 450
+SCENE_TRANSITION_DURATION_MS = 900
 COVER_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 # Subtle, free transitions suited to a whiteboard sequence. Resource ids are
 # stable even when the vendored enum source is decoded with a different locale.
@@ -327,7 +327,14 @@ def stabilize_final_element(
 
 
 def enum_member(enum_type, name: str):
-    return getattr(enum_type, name, None) if name else None
+    if not name:
+        return None
+    member = getattr(enum_type, name, None)
+    if member is not None:
+        return member
+    # Some Jianying display names contain spaces while their Python enum keys
+    # use underscores, for example "冲刺 II" -> "冲刺_II".
+    return getattr(enum_type, name.replace(" ", "_"), None)
 
 
 def transition_member_by_resource_id(resource_id: str):
@@ -1038,6 +1045,14 @@ class JianyingRenderer:
             text = "\n".join(element.lines) if element.lines else element.content
             font_size = element.font_size or self.theme.body_font_size
             style_size = text_style_size(font_size, element.role)
+            requested_style_size = element.metadata.get("jianying_text_size")
+            if requested_style_size is not None:
+                try:
+                    requested_style_size = float(requested_style_size)
+                except (TypeError, ValueError):
+                    requested_style_size = 0.0
+                if requested_style_size > 0:
+                    style_size = round(requested_style_size, 2)
             color = str(element.metadata.get("text_color", self.theme.text_color))
             font_name = str(element.metadata.get("font_name", ""))
             if element.role in {"label", "number"}:
@@ -1103,9 +1118,8 @@ class JianyingRenderer:
             timerange,
             clip_settings=draft.ClipSettings(transform_x=x, transform_y=y, scale_x=scale, scale_y=scale),
         )
-        video_effect = enum_member(draft.VideoSceneEffectType, str(element.metadata.get("video_effect", "")))
-        if video_effect is not None:
-            segment.add_effect(video_effect)
+        # Picture effects are currently paused. Keep any legacy metadata
+        # readable, but do not write a scene effect into newly built drafts.
         has_reflow = bool(element.metadata.get("layout_keyframes"))
         has_native_intro = apply_video_animations(segment, element, allow_intro=not has_reflow)
         if has_reflow or not has_native_intro:
@@ -1118,6 +1132,3 @@ class JianyingRenderer:
 
     def _resolve_path(self, path: Path) -> Path:
         return path if path.is_absolute() else self.project_root / path
-
-
-

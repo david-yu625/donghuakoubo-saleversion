@@ -382,9 +382,9 @@ class LayoutEngineTest(unittest.TestCase):
         subtitles = subtitle_area(canvas)
 
         self.assertEqual(stage, Box(64, 254, 1792, 702))
-        self.assertEqual(subtitles.center_y, 1016)
+        self.assertEqual(subtitles.center_y, 1017)
         self.assertGreaterEqual(subtitles.y, stage.bottom)
-        self.assertLessEqual(subtitles.bottom, canvas.height)
+        self.assertEqual(canvas.height - subtitles.bottom, 32)
 
     def test_landscape_timeline_flow_keeps_keywords_in_side_rail(self):
         engine = LayoutEngine(canvas=canvas_for_orientation("横屏"))

@@ -179,6 +179,8 @@ EMPHASIS_TEXT_LOOPS = ("漂浮",)
 SCENE_TRANSITION_INTROS: tuple[str, ...] = ("渐显", "轻微放大", "模糊聚焦", "放大")
 VIDEO_INTROS = merge_profile_values("video_intros")
 VIDEO_OUTROS = merge_profile_values("video_outros")
-# Persistent scene effects alter the image itself and easily overwhelm whiteboard visuals.
-# Variety belongs in intro/outro motion; overlays receive no mandatory scene effect.
+# Picture effects are paused. Keep this switch explicit so both new layouts
+# and older layout files remain effect-free until the visual direction is
+# revisited.
+VIDEO_EFFECTS_ENABLED = False
 VIDEO_EFFECTS: tuple[str, ...] = ()

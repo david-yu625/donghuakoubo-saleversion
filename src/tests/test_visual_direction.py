@@ -49,7 +49,10 @@ class VisualDirectorTest(unittest.TestCase):
 
         self.assertEqual(VisualDirector().plan(facts).layout.template, "background_stack")
 
-    def test_background_stays_stable_while_overlay_gets_visual_directives(self):
+    def test_picture_effects_are_paused(self):
+        self.assertEqual(VIDEO_EFFECTS, ())
+
+    def test_background_and_overlay_do_not_receive_picture_effects(self):
         facts = scene(1, image_count=0)
         facts = SceneFacts(**{**facts.__dict__, "elements": (
             SceneElement("s1_bg01", "image", "background.png", 0, 3000, role="background"),
@@ -74,7 +77,36 @@ class VisualDirectorTest(unittest.TestCase):
         self.assertIn(overlay.metadata["video_intro"], VIDEO_INTROS)
         self.assertIn(overlay.metadata["video_outro"], VIDEO_OUTROS)
         self.assertNotIn("video_effect", overlay.metadata)
-        self.assertEqual(VIDEO_EFFECTS, ())
+
+    def test_background_only_scenes_do_not_receive_picture_effects(self):
+        facts = scene(1, image_count=0)
+        result = LayoutResult(
+            "test",
+            Canvas(),
+            [ElementLayout(
+                "background", "image", "background.png", Box(0, 0, 1080, 1920), 0, 3000,
+                10, "background", metadata={"stack_role": "background"},
+            )],
+        )
+        applied = apply_visual_plan(result, VisualDirector().plan(facts))
+        self.assertNotIn("video_effect", applied.elements[0].metadata)
+
+    def test_each_scene_does_not_assign_picture_effects(self):
+        facts = scene(1, image_count=3)
+        result = LayoutResult(
+            "test",
+            Canvas(),
+            [
+                ElementLayout(
+                    f"image_{index}", "image", f"asset_{index}.png",
+                    Box(0, index * 100, 300, 300), 0, 3000, 10 + index, "overlay",
+                )
+                for index in range(3)
+            ],
+        )
+        applied = apply_visual_plan(result, VisualDirector().plan(facts))
+        effects = [element for element in applied.elements if element.metadata.get("video_effect")]
+        self.assertEqual(effects, [])
 
     def test_overview_scene_uses_board_overview_layout(self):
         facts = scene(0, image_count=0, semantic_role="overview")
@@ -150,6 +182,11 @@ class VisualDirectorTest(unittest.TestCase):
             self.assertIsNotNone(getattr(draft.IntroType, name, None), name)
         for name in VIDEO_OUTROS:
             self.assertIsNotNone(getattr(draft.OutroType, name, None), name)
+        for name in VIDEO_EFFECTS:
+            self.assertIsNotNone(
+                getattr(draft.VideoSceneEffectType, name.replace(" ", "_"), None),
+                name,
+            )
 
     def test_typography_presets_do_not_use_dotted_keyword_font(self):
         self.assertTrue(

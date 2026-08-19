@@ -13,7 +13,6 @@ from .presets import (
     EFFECT_PROFILES,
     EMPHASIS_TEXT_LOOPS,
     SCENE_TRANSITION_INTROS,
-    VIDEO_EFFECTS,
 )
 from .sound_design import sound_cue_for, sound_priority_for
 
@@ -64,9 +63,6 @@ def apply_visual_plan(
         profile_name, profile, support_profile, "video_outros", overlay_image_count, f"{plan.scene_id}:video-out"
     )
     video_outros = avoid_matching_pairs(video_intros, video_outros, support_profile["video_outros"])
-    video_effects = distributed_choices(
-        VIDEO_EFFECTS, overlay_image_count, f"{plan.scene_id}:video-effect", randomize=True
-    )
     keyword_colors = distributed_keyword_text_colors(
         keyword_count,
         f"{plan.scene_id}:keyword-text-color",
@@ -124,10 +120,7 @@ def apply_visual_plan(
             else:
                 metadata["video_intro"] = video_intros[image_index]
                 metadata["video_outro"] = video_outros[image_index]
-                if video_effects[image_index]:
-                    metadata["video_effect"] = video_effects[image_index]
-                else:
-                    metadata.pop("video_effect", None)
+                metadata.pop("video_effect", None)
                 metadata["hold_motion"] = plan.motion.hold_motion
                 image_index += 1
         sound_cue = sound_cue_for(element, metadata)

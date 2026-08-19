@@ -86,7 +86,11 @@ def build_project_draft(
         audio_path=audio_path,
         background_music_path=background_music_path,
         include_sound_effects=include_sound_effects,
-        global_title=project_title.strip(),
+        global_title=(
+            ""
+            if layout.canvas.width > layout.canvas.height
+            else project_title.strip()
+        ),
         title_font=settings.title_font,
         title_color=settings.title_color,
         title_background_color=settings.title_background_color,

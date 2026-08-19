@@ -464,10 +464,11 @@ tell application "System Events"
     set p to first application process whose bundle identifier is "{MACOS_JIANYING_BUNDLE_ID}"
     set w to front window of p
     if (name of w as text) is not "导出" then return "closed"
-    set windowSize to size of w
     repeat with e in static texts of w
         try
             set n to name of e as text
+            set d to description of e as text
+            if d is "ExportSucceedCloseBtn" then return "complete"
             if n is "正在导出" or n starts with "ExportProgress:" then return "progress"
         end try
     end repeat
@@ -477,9 +478,6 @@ tell application "System Events"
             if n ends with ".mp4" then return "settings"
         end try
     end repeat
-    -- The success page is 640x428 in current builds; the progress page is
-    -- slightly taller and exposes ExportProgress above.
-    if (item 2 of windowSize) <= 430 then return "complete"
     return "closed"
 end tell
 '''
@@ -494,7 +492,8 @@ tell application "System Events"
     repeat with b in buttons of front window of p
         try
             set n to name of b as text
-            if n is "ExportOkBtn" or n is "导出" or n is "导出视频" then
+            set d to description of b as text
+            if n is "ExportOkBtn" or d is "ExportOkBtn" or n is "导出" or n is "导出视频" then
                 set q to position of b
                 set s to size of b
                 return ((item 1 of q) as text) & "," & ((item 2 of q) as text) & "," & ((item 1 of s) as text) & "," & ((item 2 of s) as text)
@@ -537,26 +536,23 @@ def _macos_export_path(*, timeout: float) -> Path | None:
 tell application "System Events"
     set p to first application process whose bundle identifier is "{MACOS_JIANYING_BUNDLE_ID}"
     set w to front window of p
-    repeat with e in entire contents of w
+    repeat with e in static texts of w
+        try
+            set v to value of e as text
+            if v starts with "/" and (v ends with ".mp4" or v ends with ".mov" or v ends with ".m4v") then
+                return v
+            end if
+        end try
         try
             set n to name of e as text
+            if n starts with "/" and (n ends with ".mp4" or n ends with ".mov" or n ends with ".m4v") then
+                return n
+            end if
+        end try
+        try
             set d to description of e as text
-            try
-                set v to value of e as text
-                if v starts with "/" and (v ends with ".mp4" or v ends with ".mov" or v ends with ".m4v") then
-                    return v
-                end if
-            end try
-            if n contains "ExportPath" or d contains "ExportPath" then
-                try
-                    set container to parent of e
-                    repeat with siblingElement in UI elements of container
-                        try
-                            set siblingValue to value of siblingElement as text
-                            if siblingValue starts with "/" then return siblingValue
-                        end try
-                    end repeat
-                end try
+            if d starts with "/" and (d ends with ".mp4" or d ends with ".mov" or d ends with ".m4v") then
+                return d
             end if
         end try
     end repeat
@@ -862,7 +858,13 @@ def _click_export_macos(*, timeout: float, target_pid: int | None = None) -> Pat
     closed_since = None
     while time.monotonic() < completion_deadline:
         time.sleep(0.4)
-        state = _macos_export_state(timeout=2.0)
+        try:
+            state = _macos_export_state(timeout=2.0)
+        except JianyingAutomationError:
+            # Jianying can temporarily stop responding to Accessibility
+            # queries while rendering. A single AX timeout is not an export
+            # failure; keep polling until the completion deadline.
+            state = "unknown"
         if state == "complete":
             break
         if state == "closed":
