@@ -22,7 +22,7 @@ class JianyingAutomationError(RuntimeError):
 
 
 JIANYING_PROCESS_NAME = "JianyingPro.exe"
-EXPORT_BUTTON_NAMES = ("导出", "导出视频")
+EXPORT_BUTTON_NAMES = ("MainWindowTitleBarExportBtn", "导出", "导出视频")
 MACOS_JIANYING_BUNDLE_ID = "com.lemon.lvpro"
 MACOS_JIANYING_APP_NAMES = (
     "VideoFusion-macOS.app",
@@ -745,17 +745,46 @@ def open_draft(draft_folder: str | Path, draft_name: str, *, timeout: float = 30
 
 def _click_export_windows(*, timeout: float) -> Path | None:
     auto, window_api = _windows_helpers()
-    hwnd, window = _wait_for_window(auto, window_api, JIANYING_PROCESS_NAME, timeout)
-    _activate_window(hwnd, window_api)
-    button = _find_named_control(window, EXPORT_BUTTON_NAMES, timeout=timeout, contains=True)
+    # Jianying keeps the home page window alive while the editor is open.
+    # Select the window that actually exposes the editor export control rather
+    # than relying on the first process window returned by EnumWindows.
+    deadline = time.monotonic() + timeout
+    hwnd = None
+    window = None
+    button = None
+    while time.monotonic() < deadline:
+        for candidate_hwnd in _window_handles(JIANYING_PROCESS_NAME, window_api):
+            candidate_window = auto.ControlFromHandle(candidate_hwnd)
+            if candidate_window is None:
+                continue
+            remaining = min(0.8, max(0.1, deadline - time.monotonic()))
+            candidate_button = _find_named_control(
+                candidate_window,
+                EXPORT_BUTTON_NAMES,
+                timeout=remaining,
+                contains=True,
+            )
+            if candidate_button is not None:
+                hwnd = candidate_hwnd
+                window = candidate_window
+                button = candidate_button
+                break
+        if button is not None:
+            break
+        time.sleep(0.25)
     if button is None:
         raise JianyingAutomationError("没有找到剪映“导出”按钮，请确认草稿已经打开")
+    _activate_window(hwnd, window_api)
     try:
         button.Click()
     except Exception as exc:
         raise JianyingAutomationError(f"点击导出失败：{exc}") from exc
 
-    export_path_control = _find_named_control(window, ("ExportPath",), timeout=min(timeout, 8.0))
+    export_path_control = _find_named_control(
+        window,
+        ("ExportPathInput", "ExportPath"),
+        timeout=min(timeout, 8.0),
+    )
     export_path = None
     if export_path_control is not None:
         try:
@@ -791,22 +820,59 @@ def _click_export_windows(*, timeout: float) -> Path | None:
     except Exception as exc:
         raise JianyingAutomationError(f"关闭导出完成窗口失败：{exc}") from exc
 
+    # Closing the editor returns to Jianying's still-running home window. Close
+    # both windows so the UI action has the same end state as the macOS path.
     try:
         window_api.restore_and_focus(hwnd)
         window_api.close(hwnd)
     except Exception as exc:
         raise JianyingAutomationError(f"关闭剪映编辑器失败：{exc}") from exc
-    confirm_button = _find_named_control(
-        window,
-        ("automationconfirmBtn", "确认"),
-        timeout=2.0,
-        contains=False,
-    )
-    if confirm_button is not None:
-        try:
-            confirm_button.Click()
-        except Exception as exc:
-            raise JianyingAutomationError(f"确认退出剪映失败：{exc}") from exc
+
+    close_deadline = time.monotonic() + max(5.0, min(timeout, 15.0))
+    no_window_since = None
+    while time.monotonic() < close_deadline:
+        handles = _window_handles(JIANYING_PROCESS_NAME, window_api)
+        if not handles:
+            if no_window_since is None:
+                no_window_since = time.monotonic()
+            elif time.monotonic() - no_window_since >= 1.0:
+                break
+            time.sleep(0.2)
+            continue
+        no_window_since = None
+        confirmation_clicked = False
+        for remaining_hwnd in handles:
+            try:
+                remaining_window = auto.ControlFromHandle(remaining_hwnd)
+            except Exception:
+                # The editor handle can disappear between EnumWindows and the
+                # UIA lookup while Jianying restores its home window.
+                continue
+            if remaining_window is None:
+                continue
+            confirm_button = _find_named_control(
+                remaining_window,
+                ("automationconfirmBtn", "确认"),
+                timeout=0.3,
+                contains=False,
+            )
+            if confirm_button is not None:
+                try:
+                    confirm_button.Click()
+                except Exception as exc:
+                    raise JianyingAutomationError(f"确认退出剪映失败：{exc}") from exc
+                confirmation_clicked = True
+                break
+        if not confirmation_clicked:
+            for remaining_hwnd in handles:
+                try:
+                    window_api.restore_and_focus(remaining_hwnd)
+                    window_api.close(remaining_hwnd)
+                except Exception as exc:
+                    raise JianyingAutomationError(f"关闭剪映首页失败：{exc}") from exc
+        time.sleep(0.4)
+    else:
+        raise JianyingAutomationError("导出已完成，但关闭剪映窗口超时")
     return export_path
 
 

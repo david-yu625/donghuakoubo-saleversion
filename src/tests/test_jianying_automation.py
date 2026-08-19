@@ -36,6 +36,15 @@ class JianyingAutomationTest(unittest.TestCase):
             control,
         )
 
+    def test_windows_export_button_includes_internal_qt_identifier(self):
+        self.assertIn("MainWindowTitleBarExportBtn", jianying_automation.EXPORT_BUTTON_NAMES)
+
+    def test_parse_export_path_accepts_windows_drive_path(self):
+        self.assertEqual(
+            jianying_automation._parse_export_path("D:/8月19日.mp4"),
+            Path("D:/8月19日.mp4"),
+        )
+
     def test_open_draft_windows_clicks_parent_of_home_page_title(self):
         class FakeAuto:
             @staticmethod

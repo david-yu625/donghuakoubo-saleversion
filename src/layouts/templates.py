@@ -672,6 +672,25 @@ def stack_slots(count: int, region: Box, *, landscape: bool, gap: int, variant: 
                     support_height,
                 ),
             ]
+        if count == 5:
+            # Keep a dense five-beat explanation balanced: three equal cells
+            # on top and two centered cells below, rather than leaving the
+            # final row visually pinned to the left edge.
+            row_height = (region.height - gap) // 2
+            top_width = (region.width - gap * 2) // 3
+            bottom_width = (region.width - gap) // 2
+            top_total = top_width * 3 + gap * 2
+            bottom_total = bottom_width * 2 + gap
+            top_x = region.x + (region.width - top_total) // 2
+            bottom_x = region.x + (region.width - bottom_total) // 2
+            bottom_y = region.y + row_height + gap
+            return [
+                Box(top_x + index * (top_width + gap), region.y, top_width, row_height)
+                for index in range(3)
+            ] + [
+                Box(bottom_x + index * (bottom_width + gap), bottom_y, bottom_width, region.bottom - bottom_y)
+                for index in range(2)
+            ]
         columns = min(3, count)
         rows = (count + columns - 1) // columns
         slot_width = (region.width - gap * (columns - 1)) // columns

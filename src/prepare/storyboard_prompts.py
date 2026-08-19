@@ -2,8 +2,8 @@
 """Step 04: turn Step 03 shots into image-generation prompt rows.
 
 The input shot is treated as ``title|||narration``.  A shot produces one
-background prompt containing the title and narration, plus at least two
-separate visual-element prompts.  Step 05 may add model-specific styling, but
+background prompt containing the title and narration, plus two to five
+separate visual-element prompts based on Shot density. Step 05 may add model-specific styling, but
 it must not have to reconstruct the storyboard semantics.
 """
 
@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
 import os
 import re
 import sys
@@ -27,6 +28,10 @@ DEFAULT_BASE_URL = "https://api.deepseek.com"
 
 CSV_FIELDS = ["element_id", "shot_id", "type", "role", "content", "start_ms", "end_ms"]
 CONTENT_ROLES = {"background", "element"}
+MIN_ELEMENTS_PER_SHOT = 2
+MAX_ELEMENTS_PER_SHOT = 5
+CHARS_PER_ELEMENT = 35
+MS_PER_ELEMENT = 6000
 SHOT_FIELDS = ["shot_id", "分镜标题", "开始时间ms", "结束时间ms", "分镜对应原始文案内容"]
 
 SYSTEM_PROMPT = """#目标
@@ -62,7 +67,8 @@ SYSTEM_PROMPT = """#目标
 背景图：标题下的一句精简文字要点
 元素图：第一个具体可视化步骤
 元素图：第二个具体可视化步骤
-3. 每个标题段必须恰好 1 条“背景图：”和至少 2 条“元素图：”。优先用两张完整、信息密度高且不重复的图讲清知识点；内容复杂时可增加元素图。不要自行添加其他字段、编号或时间。""".strip()
+3. 上面的元素图行只是格式示例；实际输出时必须按照每个标题输入中的数量要求，把“元素图：”行重复 N 次。
+4. 每个标题段必须恰好 1 条“背景图：”和输入中指定的 N 条“元素图：”，不能少于或多于 N 条，N 的上限为 5。每条元素图只表达一个独立、可见的知识步骤、对象、动作、关系或结果；不要把多个步骤压缩到同一张图。不要自行添加其他字段、编号或时间。""".strip()
 
 
 def parse_args() -> argparse.Namespace:
@@ -141,7 +147,11 @@ def build_user_prompt(shots: list[dict[str, str]], orientation: str = "") -> str
     ]
     for index, shot in enumerate(shots, start=1):
         title, narration = split_title_content(shot)
-        lines.append(f"标题{index}：{title}|||{narration}")
+        required = required_element_count(shot)
+        lines.append(
+            f"标题{index}（元素图数量要求：恰好 {required} 张）："
+            f"{title}|||{narration}"
+        )
     lines.extend([
         "",
         "#画布方向",
@@ -198,8 +208,7 @@ def generate_validated_rows(*, shots: list[dict[str, str]], system_prompt: str, 
 
 def build_correction_prompt(error: str) -> str:
     return (f"上一版图片内容未通过校验，错误：{error}\n请重新输出覆盖所有标题段的图片内容。"
-            "每个标题段必须有 1 条“背景图：”和至少 2 条“元素图：”；优先用两张完整且不重复的图讲清知识点，内容复杂时可增加元素图，背景只写精简文字要点，"
-            "每条 element 必须表达一个不重复的具体知识步骤，主体占画面大部分；"
+            "每个标题段必须有 1 条“背景图：”和输入指定的 N 条“元素图：”，不能少于或多于 N 条，每镜最多 5 张；每条 element 必须表达一个不重复的具体知识步骤、对象、动作、关系或结果，禁止把多个步骤塞进同一张图；背景只写精简文字要点，"
             "禁止空节点、空卡片和只有方块箭头的抽象占位图。不要输出 CSV、JSON、Markdown 或代码块。")
 
 
@@ -236,13 +245,16 @@ def parse_model_content(text: str, shots: list[dict[str, str]]) -> list[dict[str
     headers = [str(plan["header"]) for plan in plans]
     if headers != expected_headers:
         raise ValueError(f"标题段不完整或顺序错误，应为：{'、'.join(expected_headers)}")
-    for plan in plans:
+    for shot, plan in zip(shots, plans, strict=True):
         if not str(plan["background"]).strip():
             raise ValueError(f"{plan['header']} 缺少背景图内容")
         elements = plan["elements"]
         assert isinstance(elements, list)
-        if len(elements) < 2:
-            raise ValueError(f"{plan['header']} 至少需要 2 条元素图内容")
+        required = required_element_count(shot)
+        if len(elements) < required:
+            raise ValueError(f"{plan['header']} 至少需要 {required} 条元素图内容")
+        if len(elements) > required:
+            raise ValueError(f"{plan['header']} 恰好需要 {required} 条元素图内容，当前有 {len(elements)} 条")
         if any(not str(item).strip() for item in elements):
             raise ValueError(f"{plan['header']} 存在空元素图内容")
     return plans
@@ -302,6 +314,26 @@ def compose_element_content(description: str) -> str:
     return (
         f"{description}；主体完整清晰地占据画面大部分，四周仅留少量白边，不出现长文字。"
     )
+
+
+def required_element_count(shot: dict[str, str]) -> int:
+    """Estimate how many independent visual beats a Shot needs.
+
+    Duration catches long spoken explanations whose text is compact, while
+    character count catches dense technical sentences. The cap keeps the
+    board readable and matches the layout's supported five-image grid.
+    """
+    narration = re.sub(r"\s+", "", shot.get("分镜对应原始文案内容", ""))
+    characters = len(narration)
+    try:
+        duration_ms = max(0, int(shot.get("结束时间ms", "0")) - int(shot.get("开始时间ms", "0")))
+    except (TypeError, ValueError):
+        duration_ms = 0
+    estimated = max(
+        math.ceil(characters / CHARS_PER_ELEMENT) if characters else 0,
+        math.ceil(duration_ms / MS_PER_ELEMENT) if duration_ms else 0,
+    )
+    return min(MAX_ELEMENTS_PER_SHOT, max(MIN_ELEMENTS_PER_SHOT, estimated))
 
 
 def _shot_map(shots: list[dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -377,8 +409,12 @@ def validate_rows(rows: list[dict[str, str]], shots: list[dict[str, str]]) -> No
     for shot_id, shot_rows in groups.items():
         if len([r for r in shot_rows if r["role"] == "background"]) != 1:
             raise ValueError(f"Shot {shot_id} 必须有且仅有一条 background")
-        if len([r for r in shot_rows if r["role"] == "element"]) < 2:
-            raise ValueError(f"Shot {shot_id} 至少需要 2 张元素图")
+        element_count = len([r for r in shot_rows if r["role"] == "element"])
+        required = required_element_count(shot_map[shot_id])
+        if element_count < required:
+            raise ValueError(f"Shot {shot_id} 至少需要 {required} 张元素图")
+        if element_count > required:
+            raise ValueError(f"Shot {shot_id} 恰好需要 {required} 张元素图，当前有 {element_count} 张")
 
 
 def normalize_progressive_timing(rows: list[dict[str, str]], shots: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -404,14 +440,17 @@ def generate_dry_run(shots: list[dict[str, str]]) -> list[dict[str, object]]:
     plans: list[dict[str, object]] = []
     for index, shot in enumerate(shots, start=1):
         title, narration = split_title_content(shot)
+        candidates = [
+            "文案中第一个具体输入、对象或前提条件，展示其可见外观",
+            "文案中紧接着发生的明确处理动作，展示参与对象和实际变化",
+            "文案中的连接关系或中间状态，展示信息如何继续传递",
+            "文案中的限制、风险或对比点，展示它与前述内容的差别",
+            "文案中可见的最终结果或应用场景，展示结果如何产生",
+        ]
         plans.append({
             "header": f"【标题{index}】",
             "background": f"{title}的核心要点：{narration}",
-            "elements": [
-                "文案中第一个具体输入、对象或前提条件，展示其可见外观",
-                "文案中发生的明确处理动作或因果关系，展示参与对象和实际变化",
-                "文案中可见的最终结果或完整关系，展示结果如何产生",
-            ],
+            "elements": candidates[:required_element_count(shot)],
         })
     return plans
 

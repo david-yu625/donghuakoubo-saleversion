@@ -126,6 +126,57 @@ class LayoutEngineTest(unittest.TestCase):
                         for second in slots[index + 1:]:
                             self.assertFalse(overlaps(first, second))
 
+    def test_stack_slots_support_five_images_without_overflow(self):
+        for orientation in ("横屏", "竖屏"):
+            with self.subTest(orientation=orientation):
+                canvas = canvas_for_orientation(orientation)
+                region = visual_stage(canvas).inset(24)
+                slots = stack_slots(
+                    5,
+                    region,
+                    landscape=canvas.width > canvas.height,
+                    gap=18,
+                    variant=1,
+                )
+                self.assertEqual(len(slots), 5)
+                self.assertTrue(all(
+                    slot.x >= region.x and slot.y >= region.y
+                    and slot.right <= region.right and slot.bottom <= region.bottom
+                    for slot in slots
+                ))
+                self.assertTrue(all(slot.width > 0 and slot.height > 0 for slot in slots))
+                for index, first in enumerate(slots):
+                    for second in slots[index + 1:]:
+                        self.assertFalse(overlaps(first, second))
+                if orientation == "横屏":
+                    self.assertEqual(len({slot.center_y for slot in slots}), 2)
+                    bottom = slots[3:]
+                    self.assertAlmostEqual(
+                        (min(slot.x for slot in bottom) + max(slot.right for slot in bottom)) / 2,
+                        region.center_x,
+                        delta=1,
+                    )
+
+    def test_background_stack_places_five_progressive_images_safely(self):
+        for orientation in ("横屏", "竖屏"):
+            with self.subTest(orientation=orientation):
+                canvas = canvas_for_orientation(orientation)
+                engine = LayoutEngine(canvas=canvas)
+                result = engine.build("background_stack", SceneContent(
+                    elements=(
+                        SceneElement("s1_bg01", "image", "background.png", 0, 30000, role="background"),
+                        *(SceneElement(
+                            f"s1_img{index:02d}", "image", f"element-{index}.png",
+                            index * 1000, 30000, role="overlay",
+                        ) for index in range(1, 6)),
+                    ),
+                    duration_ms=30000,
+                ))
+                overlays = [element for element in result.elements if element.role == "overlay"]
+                self.assertEqual(len(overlays), 5)
+                self.assertTrue(all(inside(element.box, canvas) for element in overlays))
+                self.assertTrue(all(element.metadata.get("stack_index") == index for index, element in enumerate(overlays)))
+
     def test_single_background_stack_element_is_centered_before_reflow(self):
         engine = LayoutEngine(canvas=canvas_for_orientation("横屏"))
         result = engine.build("background_stack", SceneContent(

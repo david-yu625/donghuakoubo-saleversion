@@ -14,8 +14,8 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, QSize, Qt, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QFont, QPixmap
+from PySide6.QtCore import QEvent, QTimer, QSize, Qt, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QColorDialog,
@@ -171,6 +171,18 @@ QPushButton#primary:hover { background: #4f8cff; border-color: #4f8cff; }
 QPushButton#primary:disabled {
     color: #5d6571; background: #1b1e24; border-color: #262a31;
 }
+QPushButton#describedAction QLabel#describedActionTitle {
+    color: #dce1e8; background: transparent; border: none;
+}
+QPushButton#describedAction QLabel#describedActionDescription {
+    color: #9ca3af; background: transparent; border: none;
+}
+QPushButton#describedAction:disabled QLabel#describedActionTitle {
+    color: #5d6571;
+}
+QPushButton#describedAction:disabled QLabel#describedActionDescription {
+    color: #4b5563;
+}
 QPushButton#danger { color: #ff9b91; background: transparent; border-color: #4b3030; }
 QPushButton#danger:hover { color: #ffffff; background: #702c2c; border-color: #8c3b3b; }
 QPlainTextEdit {
@@ -241,6 +253,44 @@ class PreviewImageLabel(QLabel):
         target = self.size() - QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
         target = QSize(max(1, target.width()), max(1, target.height()))
         self.setPixmap(self._pixmap.scaled(target, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+
+class DescribedActionButton(QPushButton):
+    """Action button whose embedded labels follow the button enabled state."""
+
+    ENABLED_TITLE_COLOR = "#dce1e8"
+    ENABLED_DESCRIPTION_COLOR = "#9ca3af"
+    DISABLED_TITLE_COLOR = "#5d6571"
+    DISABLED_DESCRIPTION_COLOR = "#4b5563"
+
+    def set_action_labels(self, title_label: QLabel, description_label: QLabel) -> None:
+        self._title_label = title_label
+        self._description_label = description_label
+        self._sync_action_label_colors()
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.EnabledChange:
+            self._sync_action_label_colors()
+
+    def _sync_action_label_colors(self) -> None:
+        title_label = getattr(self, "_title_label", None)
+        description_label = getattr(self, "_description_label", None)
+        if title_label is None or description_label is None:
+            return
+        title_color = self.ENABLED_TITLE_COLOR if self.isEnabled() else self.DISABLED_TITLE_COLOR
+        description_color = (
+            self.ENABLED_DESCRIPTION_COLOR
+            if self.isEnabled()
+            else self.DISABLED_DESCRIPTION_COLOR
+        )
+        title_label.setStyleSheet(
+            f"color: {title_color}; background: transparent; border: none;"
+        )
+        description_label.setStyleSheet(
+            f"color: {description_color}; font-size: 10px; background: transparent; "
+            "border: none; border-left: 1px solid #3a414d; padding-left: 8px;"
+        )
 
 
 class PipelineWindow(QMainWindow):
@@ -1094,27 +1144,40 @@ class PipelineWindow(QMainWindow):
         return button
 
     def _described_button(self, title: str, description: str, callback) -> tuple[QPushButton, QLabel]:
-        button = QPushButton()
+        button = DescribedActionButton()
+        button.setObjectName("describedAction")
         button.clicked.connect(callback)
         layout = QHBoxLayout(button)
         layout.setContentsMargins(10, 2, 8, 2)
         layout.setSpacing(8)
 
+        arrow_label = QLabel()
+        arrow_label.setObjectName("describedActionArrow")
+        arrow_label.setPixmap(
+            self.style().standardIcon(QStyle.SP_ArrowForward).pixmap(QSize(18, 18), QIcon.Normal)
+        )
+        arrow_label.setFixedSize(18, 18)
+        arrow_label.setAlignment(Qt.AlignCenter)
+        arrow_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         title_label = QLabel(title)
+        title_label.setObjectName("describedActionTitle")
         title_label.setAlignment(Qt.AlignCenter)
         title_label.setFixedWidth(140)
         title_label.setStyleSheet("background: transparent; border: none;")
         title_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         description_label = QLabel(description)
+        description_label.setObjectName("describedActionDescription")
         description_label.setAlignment(Qt.AlignCenter)
         description_label.setWordWrap(True)
         description_label.setStyleSheet(
-            "color: #9ca3af; font-size: 10px; background: transparent; "
-            "border: none; border-left: 1px solid #3a414d; padding-left: 8px;"
+            "font-size: 10px; background: transparent; border: none; "
+            "border-left: 1px solid #3a414d; padding-left: 8px;"
         )
         description_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+        layout.addWidget(arrow_label)
         layout.addWidget(title_label)
         layout.addWidget(description_label, 1)
+        button.set_action_labels(title_label, description_label)
         return button, title_label
 
     def choose_setting_path(self, key: str) -> None:
