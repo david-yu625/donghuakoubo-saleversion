@@ -126,6 +126,35 @@ class CopywritingResponseTest(unittest.TestCase):
         rewrite_messages = client.chat.completions.create.call_args_list[1].kwargs["messages"]
         self.assertIn("一句话一行", rewrite_messages[-1]["content"])
 
+    def test_revision_requests_minimal_changes_and_returns_complete_copy(self):
+        revised = "开头问题\n核心答案\n第一层原因\n调整后的第二层\n处理结果\n最终认识"
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"wenan":"' + revised.replace("\n", "\\n") + '"}'))]
+        )
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=Mock(return_value=response))))
+        with patch.object(copywriting, "OpenAI", return_value=client):
+            result = copywriting.revise_copywriting(
+                original="开头问题\n核心答案\n第一层原因\n原来的第二层\n处理结果\n最终认识",
+                feedback="只把第四行说得更容易理解，其他内容不要改",
+                topic="测试主题",
+                api_key="key",
+            )
+
+        self.assertEqual(result, revised)
+        messages = client.chat.completions.create.call_args.kwargs["messages"]
+        self.assertIn("禁止借机重写整篇", messages[0]["content"])
+        self.assertIn("只把第四行", messages[-1]["content"])
+        self.assertIn("#现有文案", messages[-1]["content"])
+
+    def test_revision_requires_feedback(self):
+        with self.assertRaisesRegex(ValueError, "修改意见"):
+            copywriting.revise_copywriting(
+                original="第一行\n第二行\n第三行\n第四行\n第五行\n第六行",
+                feedback=" ",
+                topic="测试",
+                api_key="key",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,12 @@ def generate_copywriting(*args, **kwargs):
     return _implementation.generate_copywriting(*args, **kwargs)
 
 
+def revise_copywriting(*args, **kwargs):
+    # Keep monkey-patching the legacy entry module working for callers/tests.
+    _implementation.OpenAI = OpenAI
+    return _implementation.revise_copywriting(*args, **kwargs)
+
+
 def main() -> int:
     _implementation.OpenAI = OpenAI
     return _implementation.main()

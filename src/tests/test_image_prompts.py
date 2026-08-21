@@ -51,6 +51,7 @@ class ImagePromptStyleTest(unittest.TestCase):
         self.assertIn(design, prompt)
         self.assertIn("图片是纯白色背景", prompt)
         self.assertIn("画笔线条稍微粗一些", prompt)
+        self.assertIn("元素图生成要在图中合适位置增加关键字", prompt)
         self.assertNotIn("标题设计成一个醒目的大标题", prompt)
         self.assertNotIn("这段旁白不会进入图片提示词", prompt)
         self.assertFalse(is_background_prompt(prompt))

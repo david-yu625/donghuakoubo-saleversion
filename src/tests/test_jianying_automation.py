@@ -153,6 +153,18 @@ class JianyingAutomationTest(unittest.TestCase):
                 (1049.0, 824.0, 72.0, 20.0),
             )
 
+    def test_macos_home_search_uses_exact_draft_name(self):
+        with patch.object(
+            jianying_automation,
+            "_run_macos_osascript",
+            return_value="ok",
+        ) as run_script:
+            self.assertTrue(jianying_automation._macos_search_home_drafts("8月19日", timeout=1))
+
+        script = run_script.call_args.args[0]
+        self.assertIn('set value of item 1 of fields to "8月19日"', script)
+        self.assertIn("keystroke return", script)
+
     def test_macos_export_clicks_editor_and_final_export_buttons(self):
         clicks = []
         with (

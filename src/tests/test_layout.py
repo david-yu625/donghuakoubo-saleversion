@@ -79,7 +79,7 @@ class LayoutEngineTest(unittest.TestCase):
         self.assertLess(first_target.center_x, result.canvas.width / 2)
         self.assertGreater(second.box.center_x, result.canvas.width / 2)
 
-    def test_landscape_stack_slots_have_product_recipes_for_one_to_four_images(self):
+    def test_landscape_stack_slots_have_product_recipes_for_one_to_six_images(self):
         region = Box(64, 318, 1792, 638)
         for variant in range(3):
             with self.subTest(variant=variant):
@@ -101,6 +101,18 @@ class LayoutEngineTest(unittest.TestCase):
                 self.assertEqual(len(quad), 4)
                 self.assertGreaterEqual(max(item.width for item in quad), round(region.width * 0.49))
                 self.assertGreater(len({item.center_y for item in quad}), 1)
+
+                for count in (5, 6):
+                    slots = stack_slots(count, region, landscape=True, gap=18, variant=variant)
+                    self.assertEqual(len(slots), count)
+                    self.assertTrue(all(
+                        item.x >= region.x and item.y >= region.y
+                        and item.right <= region.right and item.bottom <= region.bottom
+                        for item in slots
+                    ))
+                    for first_index, first in enumerate(slots):
+                        for second in slots[first_index + 1:]:
+                            self.assertFalse(overlaps(first, second))
 
                 for slots in (pair, quad):
                     self.assertEqual(min(item.x for item in slots), region.x)

@@ -128,6 +128,24 @@ class ImageGenerationTest(unittest.TestCase):
             self.assertEqual(service.form["height"], 1536)
             self.assertFalse(service.form["watermark"])
 
+    def test_unprocessed_image_is_saved_exactly_without_original_copy(self):
+        service = FakeVisualService()
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "cover.png"
+            with patch("src.prepare.image_generation.visual_service", return_value=service):
+                generate_image(
+                    prompt="#封面图生成\n测试封面",
+                    output_path=output,
+                    width=1080,
+                    height=1920,
+                    req_key="test-key",
+                    postprocess=False,
+                )
+
+            with Image.open(output) as image:
+                self.assertEqual(image.size, (128, 128))
+            self.assertFalse(original_image_path(output).exists())
+
     def test_generation_retries_transient_request_failures(self):
         service = FlakyVisualService()
         with tempfile.TemporaryDirectory() as directory:

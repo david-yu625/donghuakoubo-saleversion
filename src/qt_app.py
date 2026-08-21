@@ -103,6 +103,7 @@ from .pipeline_runtime import (
     VIDEO_ORIENTATION_CHOICES,
     Runner,
     build_batch_options,
+    build_cover_command,
     build_image_regeneration_command,
     build_portrait_package_command,
     default_background_image,
@@ -113,12 +114,15 @@ from .pipeline_runtime import (
     update_env_file,
     save_copywriting_text,
 )
+from .prepare.cover import COVER_SIZE_OPTIONS, build_cover_prompt, resolve_cover_size
+from .prepare.copywriting import revise_copywriting
 from .prepare.topic_generation import generate_unique_topic, generate_unique_topics
 
 
 WORKFLOW_LANDSCAPE = "\u6a2a\u7248\u6210\u7247\uff08\u6807\u9898+\u5b57\u5e55\uff09"
 WORKFLOW_PORTRAIT_PACKAGE = "\u6a2a\u7248\u6bcd\u7247\u8f6c\u7ad6\u7248"
 WORKFLOW_NATIVE_PORTRAIT = "\u539f\u751f\u7ad6\u7248\u6210\u7247"
+WORKFLOW_COVER = "\u751f\u6210\u4f5c\u54c1\u5c01\u9762"
 UI_STATE_PATH = OUTPUT_ROOT / "ui_state.json"
 
 
@@ -253,6 +257,8 @@ class PipelineWindow(QMainWindow):
     topic_generated = Signal(str)
     batch_topics_generated = Signal(object)
     topic_generation_failed = Signal(str)
+    copy_revision_succeeded = Signal(str)
+    copy_revision_failed = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -300,6 +306,14 @@ class PipelineWindow(QMainWindow):
         self.continue_button: QPushButton | None = None
         self.workflow_mode: QComboBox | None = None
         self.workflow_tabs: QTabWidget | None = None
+        self.cover_panel: QFrame | None = None
+        self.cover_size_combo: QComboBox | None = None
+        self.cover_canvas_label: QLabel | None = None
+        self.cover_prompt_preview: QPlainTextEdit | None = None
+        self.cover_output_label: QLabel | None = None
+        self.cover_status_label: QLabel | None = None
+        self.cover_view_button: QPushButton | None = None
+        self.cover_folder_button: QPushButton | None = None
         self.project_panel: QFrame | None = None
         self.project_panel_body: QWidget | None = None
         self.project_settings_scroll: QScrollArea | None = None
@@ -319,8 +333,12 @@ class PipelineWindow(QMainWindow):
         self.topic_generate_button: QPushButton | None = None
         self.batch_topic_generate_button: QPushButton | None = None
         self.target_duration_label: QLabel | None = None
+        self.target_chars_group: QWidget | None = None
         self.context_input: QPlainTextEdit | None = None
         self._topic_generation_thread: threading.Thread | None = None
+        self._copy_revision_thread: threading.Thread | None = None
+        self._copy_revision_editor: QPlainTextEdit | None = None
+        self._copy_revision_button: QPushButton | None = None
         self.preview_succeeded.connect(self._on_preview_succeeded)
         self.preview_failed.connect(self._on_preview_failed)
         self.jianying_automation_succeeded.connect(self._on_jianying_automation_succeeded)
@@ -330,6 +348,8 @@ class PipelineWindow(QMainWindow):
         self.topic_generated.connect(self._on_topic_generated)
         self.batch_topics_generated.connect(self._on_batch_topics_generated)
         self.topic_generation_failed.connect(self._on_topic_generation_failed)
+        self.copy_revision_succeeded.connect(self._on_copy_revision_succeeded)
+        self.copy_revision_failed.connect(self._on_copy_revision_failed)
         self._build_ui()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._poll)
@@ -381,8 +401,15 @@ class PipelineWindow(QMainWindow):
         portrait_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         portrait_scroll.setWidget(self._build_portrait_package_panel())
 
+        cover_scroll = QScrollArea()
+        cover_scroll.setWidgetResizable(True)
+        cover_scroll.setFrameShape(QFrame.NoFrame)
+        cover_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        cover_scroll.setWidget(self._build_cover_panel())
+
         self.workflow_tabs.addTab(steps_scroll, "1 横版母片")
         self.workflow_tabs.addTab(portrait_scroll, "2 竖版包装")
+        self.workflow_tabs.addTab(cover_scroll, "作品封面")
         self.workflow_tabs.currentChanged.connect(self._change_workflow_stage)
         self.workflow_tabs.setMinimumWidth(780)
         self.workflow_tabs.setMinimumHeight(220)
@@ -438,7 +465,7 @@ class PipelineWindow(QMainWindow):
         self.project_labels["workflow_mode"] = workflow_label
         grid.addWidget(workflow_label, 0, 0)
         self.workflow_mode = QComboBox()
-        self.workflow_mode.addItems((WORKFLOW_LANDSCAPE, WORKFLOW_PORTRAIT_PACKAGE, WORKFLOW_NATIVE_PORTRAIT))
+        self.workflow_mode.addItems((WORKFLOW_LANDSCAPE, WORKFLOW_PORTRAIT_PACKAGE, WORKFLOW_NATIVE_PORTRAIT, WORKFLOW_COVER))
         grid.addWidget(self.workflow_mode, 0, 1, 1, 8)
 
         direction_label = QLabel("选题方向")
@@ -473,6 +500,7 @@ class PipelineWindow(QMainWindow):
         self.inputs["target_chars"] = QLineEdit("500")
         self.inputs["target_chars"].setFixedWidth(72)
         target_chars_group = QWidget()
+        self.target_chars_group = target_chars_group
         target_chars_layout = QHBoxLayout(target_chars_group)
         target_chars_layout.setContentsMargins(0, 0, 0, 0)
         target_chars_layout.setSpacing(8)
@@ -484,7 +512,7 @@ class PipelineWindow(QMainWindow):
         grid.addWidget(context_label, 3, 0, Qt.AlignTop)
         self.context_input = QPlainTextEdit()
         self.context_input.setObjectName("contextInput")
-        self.context_input.setFixedHeight(40)
+        self.context_input.setFixedHeight(80)
         self.context_input.setPlaceholderText(
             "例如：‘养龙虾’指用人工智能生成养殖方案，不是现实养殖；重点讲清概念区别。"
         )
@@ -513,6 +541,8 @@ class PipelineWindow(QMainWindow):
 
         self.inputs["topic"].textChanged.connect(self._update_automatic_draft_name)
         self.inputs["topic"].textChanged.connect(self._update_package_project_label)
+        self.inputs["topic"].textChanged.connect(self._update_cover_prompt_preview)
+        self.context_input.textChanged.connect(self._update_cover_prompt_preview)
         self.inputs["draft_name"].textEdited.connect(self._mark_draft_name_custom)
         grid.addWidget(QLabel("批量主题"), 5, 0)
         self.batch_topics = QPlainTextEdit()
@@ -710,6 +740,64 @@ class PipelineWindow(QMainWindow):
         layout.addLayout(form)
         layout.addStretch()
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        return panel
+
+    def _build_cover_panel(self) -> QFrame:
+        panel, layout = self._panel("作品封面")
+        form = QGridLayout()
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+
+        form.addWidget(QLabel("画布尺寸"), 0, 0)
+        self.cover_size_combo = QComboBox()
+        for key, label, _width, _height, _ratio, _orientation in COVER_SIZE_OPTIONS:
+            self.cover_size_combo.addItem(label, key)
+        self.cover_size_combo.currentIndexChanged.connect(self._update_cover_prompt_preview)
+        form.addWidget(self.cover_size_combo, 0, 1, 1, 2)
+
+        form.addWidget(QLabel("画布"), 1, 0)
+        self.cover_canvas_label = QLabel()
+        self.cover_canvas_label.setObjectName("muted")
+        form.addWidget(self.cover_canvas_label, 1, 1, 1, 2)
+
+        form.addWidget(QLabel("封面提示词"), 2, 0, Qt.AlignTop)
+        self.cover_prompt_preview = QPlainTextEdit()
+        self.cover_prompt_preview.setReadOnly(True)
+        self.cover_prompt_preview.setFixedHeight(180)
+        self.cover_prompt_preview.setPlaceholderText("填写主题后，这里会显示封面生成提示词。")
+        form.addWidget(self.cover_prompt_preview, 2, 1, 1, 2)
+
+        form.addWidget(QLabel("输出文件"), 3, 0)
+        self.cover_output_label = QLabel()
+        self.cover_output_label.setObjectName("muted")
+        self.cover_output_label.setWordWrap(True)
+        form.addWidget(self.cover_output_label, 3, 1)
+        self.cover_status_label = QLabel("未生成")
+        self.cover_status_label.setObjectName("status")
+        self.cover_status_label.setAlignment(Qt.AlignCenter)
+        form.addWidget(self.cover_status_label, 3, 2)
+        self.cover_folder_button = self._button(
+            "打开文件夹",
+            QStyle.SP_DirOpenIcon,
+            self.open_cover_folder,
+        )
+        form.addWidget(self.cover_folder_button, 4, 1)
+        self.cover_view_button = self._button(
+            "查看封面",
+            QStyle.SP_FileDialogDetailedView,
+            self.show_cover_artifact,
+        )
+        self.cover_view_button.setEnabled(False)
+        form.addWidget(self.cover_view_button, 4, 2)
+
+        note = QLabel("封面独立于 01～09 主流程，只生成 PNG，不生成配音、布局或剪映草稿。")
+        note.setObjectName("muted")
+        note.setWordWrap(True)
+        layout.addLayout(form)
+        layout.addWidget(note)
+        layout.addStretch()
+        self._update_cover_prompt_preview()
+        self.cover_panel = panel
         return panel
 
     def _build_steps_panel(self) -> QFrame:
@@ -1289,7 +1377,15 @@ class PipelineWindow(QMainWindow):
 
         def worker() -> None:
             try:
-                result, export_path = open_draft_and_click_export_with_path(draft_folder, draft_name)
+                # macOS Jianying may spend over 30 seconds loading a draft
+                # with many generated assets.  Keep Windows' normal timeout,
+                # but give the macOS open phase enough time to settle.
+                automation_timeout = 120.0 if sys.platform == "darwin" else 30.0
+                result, export_path = open_draft_and_click_export_with_path(
+                    draft_folder,
+                    draft_name,
+                    timeout=automation_timeout,
+                )
                 self._last_jianying_export_path = export_path
                 detail = f"，导出路径：{export_path}" if export_path is not None else ""
                 message = f"已打开草稿并完成导出：{result}{detail}"
@@ -1627,22 +1723,26 @@ class PipelineWindow(QMainWindow):
         del index
         mode = self.workflow_mode.currentText() if self.workflow_mode is not None else WORKFLOW_LANDSCAPE
         packaging = mode == WORKFLOW_PORTRAIT_PACKAGE
+        cover = mode == WORKFLOW_COVER
         if self.workflow_tabs is not None:
+            self.workflow_tabs.setTabVisible(0, not cover)
             self.workflow_tabs.setTabVisible(1, packaging)
-            self.workflow_tabs.tabBar().setVisible(packaging)
-            self.workflow_tabs.setCurrentIndex(0)
+            self.workflow_tabs.setTabVisible(2, cover)
+            self.workflow_tabs.tabBar().setVisible(packaging and not cover)
+            self.workflow_tabs.setCurrentIndex(2 if cover else 0)
         orientation_combo = self.setting_combos.get("VIDEO_ORIENTATION")
         if orientation_combo is not None:
             orientation_combo.setCurrentText(self._workflow_orientation())
         self._update_primary_action()
-        self.batch_button.setVisible(True)
+        self.batch_button.setVisible(not cover)
         if self.batch_topic_label is not None:
-            self.batch_topic_label.setVisible(True)
+            self.batch_topic_label.setVisible(not cover)
         if self.batch_topic_generate_button is not None:
-            self.batch_topic_generate_button.setVisible(True)
-        self.batch_topics.setVisible(True)
-        self.batch_status_label.setVisible(True)
+            self.batch_topic_generate_button.setVisible(not cover)
+        self.batch_topics.setVisible(not cover)
+        self.batch_status_label.setVisible(not cover)
         self._update_project_fields_for_stage()
+        self._update_cover_prompt_preview()
         if not packaging:
             self._update_package_project_label()
 
@@ -1654,15 +1754,26 @@ class PipelineWindow(QMainWindow):
             self.refresh_landscape_projects()
 
     def _update_project_fields_for_stage(self) -> None:
-        show_creation_fields = True
-        for key in ("topic_direction", "topic", "context", "target_chars"):
-            self.project_labels[key].setVisible(show_creation_fields)
+        mode = self.workflow_mode.currentText() if self.workflow_mode is not None else WORKFLOW_LANDSCAPE
+        cover = mode == WORKFLOW_COVER
+        field_visibility = {
+            "topic_direction": not cover,
+            "topic": True,
+            "context": True,
+            "target_chars": not cover,
+        }
+        for key, visible in field_visibility.items():
+            self.project_labels[key].setVisible(visible)
             widget = self.context_input if key == "context" else self.inputs[key]
-            widget.setVisible(show_creation_fields)
+            widget.setVisible(visible)
         if self.target_duration_label is not None:
-            self.target_duration_label.setVisible(show_creation_fields)
+            self.target_duration_label.setVisible(not cover)
+        if self.target_chars_group is not None:
+            self.target_chars_group.setVisible(not cover)
         if self.topic_generate_button is not None:
-            self.topic_generate_button.setVisible(show_creation_fields)
+            self.topic_generate_button.setVisible(not cover)
+        self.project_labels["draft_name"].setVisible(not cover)
+        self.inputs["draft_name"].setVisible(not cover)
         if self.project_panel is not None:
             project_layout = self.project_panel.layout()
             if project_layout is not None:
@@ -1678,8 +1789,13 @@ class PipelineWindow(QMainWindow):
     def _update_primary_action(self, _index: int = 0) -> None:
         mode = self.workflow_mode.currentText() if self.workflow_mode is not None else WORKFLOW_LANDSCAPE
         packaging = mode == WORKFLOW_PORTRAIT_PACKAGE
+        cover = mode == WORKFLOW_COVER
         package_stage = packaging and self.workflow_tabs is not None and self.workflow_tabs.currentIndex() == 1
-        if package_stage:
+        if cover:
+            self.start_button.setText("生成封面图")
+            size = self._current_cover_size()
+            self.start_button.setToolTip(f"生成当前主题的 {size[2]}×{size[3]} {size[5]}作品封面")
+        elif package_stage:
             self.start_button.setText("生成竖版包装草稿")
             self.start_button.setToolTip("使用已导出的横版 MP4 生成竖版包装草稿")
         elif packaging:
@@ -1689,7 +1805,7 @@ class PipelineWindow(QMainWindow):
             self.start_button.setText("开始执行")
             self.start_button.setToolTip("")
         if self.continue_button is not None:
-            can_start_from_copy = not package_stage
+            can_start_from_copy = not package_stage and not cover
             self.continue_button.setVisible(can_start_from_copy)
             if packaging:
                 self.continue_button.setText("从文案生成横版母片")
@@ -1875,6 +1991,9 @@ class PipelineWindow(QMainWindow):
         self.refresh_status()
 
     def run_pipeline(self) -> None:
+        if self.workflow_mode is not None and self.workflow_mode.currentText() == WORKFLOW_COVER:
+            self.run_cover_pipeline()
+            return
         if self.workflow_mode is not None and self.workflow_mode.currentText() == WORKFLOW_PORTRAIT_PACKAGE:
             package_stage = self.workflow_tabs is not None and self.workflow_tabs.currentIndex() == 1
             if package_stage:
@@ -1896,6 +2015,36 @@ class PipelineWindow(QMainWindow):
         self._auto_run_step09 = options.run_draft
         self._focus_workflow_view()
         self.runner.start(options)
+        self.refresh_status()
+
+    def run_cover_pipeline(self) -> None:
+        if self.runner.running:
+            QMessageBox.information(self, "正在运行", "当前任务尚未完成，请稍后生成封面。")
+            return
+        if not self._persist_settings():
+            return
+        topic = self.inputs["topic"].text().strip()
+        if not topic:
+            QMessageBox.information(self, "缺少主题", "请先填写主题。")
+            return
+        try:
+            command, output = build_cover_command(
+                topic,
+                context=self.context_input.toPlainText().strip() if self.context_input is not None else "",
+                image_model=self.image_model_setting.currentText(),
+                image_quality=self.api_combos.get("IMAGE_QUALITY").currentText()
+                if self.api_combos.get("IMAGE_QUALITY") is not None else "",
+                visual_theme=self.setting_combos["VISUAL_THEME"].currentText(),
+                cover_size=self._current_cover_size()[0],
+                overwrite=True,
+            )
+        except ValueError as exc:
+            QMessageBox.warning(self, "封面生成失败", str(exc))
+            return
+        self.log.clear()
+        self._focus_workflow_view()
+        self.log.setFocus(Qt.OtherFocusReason)
+        self.runner.start_commands([("作品封面", command)], output.parent)
         self.refresh_status()
 
     def run_from_copywriting(self) -> None:
@@ -2071,9 +2220,61 @@ class PipelineWindow(QMainWindow):
         self.run_automation_step()
 
     def output_dir(self) -> Path:
+        if self.workflow_mode is not None and self.workflow_mode.currentText() == WORKFLOW_COVER:
+            return OUTPUT_ROOT / safe_topic(self.inputs["topic"].text()) / "cover"
         return OUTPUT_ROOT / safe_topic(self.inputs["topic"].text()) / orientation_key(
             self.setting_combos["VIDEO_ORIENTATION"].currentText()
         )
+
+    def cover_artifact_path(self) -> Path:
+        topic = self.inputs["topic"].text().strip()
+        _key, _label, width, height, _ratio, _orientation = self._current_cover_size()
+        return OUTPUT_ROOT / safe_topic(topic) / "cover" / f"{safe_topic(topic)}_cover_{width}x{height}.png"
+
+    def _current_cover_size(self) -> tuple[str, str, int, int, str, str]:
+        if self.cover_size_combo is None:
+            return COVER_SIZE_OPTIONS[0]
+        value = self.cover_size_combo.currentData()
+        try:
+            return resolve_cover_size(str(value or ""))
+        except ValueError:
+            return COVER_SIZE_OPTIONS[0]
+
+    def _update_cover_prompt_preview(self, _value: str = "") -> None:
+        if self.cover_prompt_preview is None:
+            return
+        topic = self.inputs["topic"].text().strip() if "topic" in self.inputs else ""
+        context = self.context_input.toPlainText().strip() if self.context_input is not None else ""
+        size = self._current_cover_size()
+        if self.cover_canvas_label is not None:
+            self.cover_canvas_label.setText(f"{size[2]} × {size[3]}（{size[4]} {size[5]}）")
+        if not topic:
+            self.cover_prompt_preview.clear()
+            if self.cover_output_label is not None:
+                self.cover_output_label.clear()
+            return
+        try:
+            self.cover_prompt_preview.setPlainText(build_cover_prompt(topic, context, size[0]))
+        except ValueError:
+            self.cover_prompt_preview.clear()
+        if self.cover_output_label is not None:
+            self.cover_output_label.setText(str(self.cover_artifact_path()))
+
+    def show_cover_artifact(self) -> None:
+        artifact = self.cover_artifact_path()
+        if not artifact.is_file():
+            QMessageBox.information(self, "未找到封面", f"没有找到封面文件：{artifact}")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(artifact)))
+
+    def open_cover_folder(self) -> None:
+        folder = self.cover_artifact_path().parent
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(self, "打开文件夹失败", f"无法创建封面目录：\n{folder}\n\n{exc}")
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def artifact_path(self, key: str) -> Path:
         output = self.output_dir()
@@ -2123,6 +2324,21 @@ class PipelineWindow(QMainWindow):
         self.stop_button.setEnabled(running)
         self.batch_topics.setEnabled(not running)
         self._set_topic_generation_enabled(not running and not topic_generation_running)
+        cover_mode = self.workflow_mode is not None and self.workflow_mode.currentText() == WORKFLOW_COVER
+        if cover_mode:
+            artifact = self.cover_artifact_path()
+            exists = artifact.is_file()
+            if self.cover_output_label is not None:
+                self.cover_output_label.setText(str(artifact))
+            if self.cover_status_label is not None:
+                self.cover_status_label.setText("运行中" if running else ("完成" if exists else "未生成"))
+            if self.cover_view_button is not None:
+                self.cover_view_button.setEnabled(exists and not running)
+            if self.cover_folder_button is not None:
+                self.cover_folder_button.setEnabled(not running)
+            self.start_button.setEnabled(not running)
+            self.stop_button.setEnabled(running)
+            return
         draft_ready = self.artifact_exists("draft")
         self._set_jianying_automation_enabled(
             jianying_supported and draft_ready and not running and not jianying_running
@@ -2225,19 +2441,98 @@ class PipelineWindow(QMainWindow):
     def _edit_copywriting(self, artifact: Path) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("查看并修改文案")
-        dialog.resize(960, 680)
+        dialog.resize(960, 760)
         layout = QVBoxLayout(dialog)
         editor = QPlainTextEdit(artifact.read_text(encoding="utf-8", errors="ignore"))
         layout.addWidget(editor, 1)
+
+        feedback_label = QLabel("修改意见")
+        feedback_label.setObjectName("sectionTitle")
+        layout.addWidget(feedback_label)
+        feedback = QPlainTextEdit()
+        feedback.setPlaceholderText("例如：只调整开头，让问题更直接；保留后面的事实、结构和结论。")
+        feedback.setFixedHeight(88)
+        layout.addWidget(feedback)
+
         actions = QHBoxLayout()
         actions.addStretch()
         cancel = self._button("取消", QStyle.SP_DialogCancelButton, dialog.reject)
+        revise = self._button(
+            "按意见微调",
+            QStyle.SP_BrowserReload,
+            lambda: self._request_copy_revision(dialog, editor, feedback, revise, artifact),
+        )
         save = self._button("保存", QStyle.SP_DialogSaveButton, lambda: self._save_copywriting(dialog, editor, artifact), "primary")
         actions.addWidget(cancel)
+        actions.addWidget(revise)
         actions.addWidget(save)
         layout.addLayout(actions)
+        self._copy_revision_editor = editor
+        self._copy_revision_button = revise
         editor.setFocus()
         dialog.exec()
+        self._copy_revision_editor = None
+        self._copy_revision_button = None
+
+    def _request_copy_revision(
+        self,
+        dialog: QDialog,
+        editor: QPlainTextEdit,
+        feedback: QPlainTextEdit,
+        button: QPushButton,
+        _artifact: Path,
+    ) -> None:
+        if self._copy_revision_thread is not None and self._copy_revision_thread.is_alive():
+            return
+        original = editor.toPlainText().strip()
+        instruction = feedback.toPlainText().strip()
+        topic = self.inputs["topic"].text().strip()
+        api_key = self.api_inputs.get("DEEPSEEK_API_KEY")
+        model = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+        base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+        if api_key is not None:
+            api_key_value = api_key.text().strip()
+        else:
+            api_key_value = os.getenv("DEEPSEEK_API_KEY", "").strip()
+        if not original:
+            QMessageBox.information(dialog, "缺少文案", "当前文案为空，无法进行微调。")
+            return
+        if not instruction:
+            QMessageBox.information(dialog, "缺少修改意见", "请先填写希望大模型调整的内容。")
+            return
+        button.setEnabled(False)
+        button.setText("正在微调…")
+
+        def worker() -> None:
+            try:
+                revised = revise_copywriting(
+                    original=original,
+                    feedback=instruction,
+                    topic=topic,
+                    api_key=api_key_value,
+                    model=model,
+                    base_url=base_url,
+                )
+                self.copy_revision_succeeded.emit(revised)
+            except Exception as exc:
+                self.copy_revision_failed.emit(str(exc))
+
+        self._copy_revision_thread = threading.Thread(target=worker, daemon=True)
+        self._copy_revision_thread.start()
+
+    def _on_copy_revision_succeeded(self, revised: str) -> None:
+        if self._copy_revision_editor is not None:
+            self._copy_revision_editor.setPlainText(revised)
+        if self._copy_revision_button is not None:
+            self._copy_revision_button.setEnabled(True)
+            self._copy_revision_button.setText("按意见微调")
+        self.log.appendPlainText("文案已按修改意见生成新版本，请检查后点击“保存”。")
+
+    def _on_copy_revision_failed(self, message: str) -> None:
+        if self._copy_revision_button is not None:
+            self._copy_revision_button.setEnabled(True)
+            self._copy_revision_button.setText("按意见微调")
+        QMessageBox.warning(self, "文案微调失败", message)
 
     def _save_copywriting(self, dialog: QDialog, editor: QPlainTextEdit, artifact: Path) -> None:
         try:

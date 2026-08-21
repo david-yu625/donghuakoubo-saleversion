@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 import queue
 import os
+import subprocess
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -18,6 +19,9 @@ from ..pipeline_runtime import (
     build_commands,
     build_image_regeneration_command,
     build_portrait_package_command,
+    command_without_image_limit,
+    is_image_generation_command,
+    missing_image_ids_for_command,
     parse_batch_topics,
     reuse_completed_materials,
     save_copywriting_text,
@@ -365,6 +369,57 @@ class GuiPipelineTest(unittest.TestCase):
         )
 
         self.assertNotIn("--overwrite", command)
+
+    def test_missing_image_ids_are_detected_from_generation_command(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            existing = root / "existing.png"
+            missing = root / "missing.png"
+            Image.new("RGB", (16, 16), "white").save(existing)
+            prompt_csv = root / "image_prompts_plus.csv"
+            prompt_csv.write_text(
+                "element_id,shot_id,role,content,width,height,asset_path,prompt\n"
+                f"s1_img01,1,element,one,16,16,{existing},x\n"
+                f"s1_img02,1,element,two,16,16,{missing},x\n",
+                encoding="utf-8",
+            )
+            command = ["python", "-m", "src.06_generate_images", str(prompt_csv), "--limit", "1"]
+
+            self.assertTrue(is_image_generation_command(command))
+            self.assertEqual(missing_image_ids_for_command(command), ["s1_img02"])
+            self.assertNotIn("--limit", command_without_image_limit(command))
+
+    def test_image_generation_automatically_retries_missing_assets(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            asset = root / "missing.png"
+            prompt_csv = root / "image_prompts_plus.csv"
+            prompt_csv.write_text(
+                "element_id,shot_id,role,content,width,height,asset_path,prompt\n"
+                f"s1_img01,1,element,one,16,16,{asset},x\n",
+                encoding="utf-8",
+            )
+            command = ["python", "-m", "src.06_generate_images", str(prompt_csv)]
+            runner = Runner(queue.Queue())
+            calls: list[list[str]] = []
+            labels: list[str] = []
+
+            def fake_run(label: str, current: list[str], env: dict[str, str]) -> None:
+                labels.append(label)
+                calls.append(current)
+                if len(calls) == 1:
+                    raise subprocess.CalledProcessError(1, current)
+                asset.write_bytes(b"not an image")
+
+            with patch.object(runner, "run_command", side_effect=fake_run), patch(
+                "src.pipeline_runtime.missing_image_ids_for_command",
+                side_effect=[["s1_img01"], []],
+            ):
+                runner.run_image_command_with_missing_retry("06 图片", command, {})
+
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(labels, ["06 图片", "生成缺失图片（自动）"])
+            self.assertEqual(calls[1][-2:], ["--element-id", "s1_img01"])
 
     def test_portrait_and_landscape_use_isolated_project_roots_and_drafts(self):
         portrait_commands, portrait_dir = build_commands(Options(
