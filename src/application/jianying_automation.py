@@ -407,6 +407,25 @@ end tell
     return x, y, width, height
 
 
+def _macos_search_home_drafts(query: str, *, timeout: float) -> bool:
+    """Filter Jianying's home draft list by its built-in search field."""
+    escaped_query = query.replace("\\", "\\\\").replace('"', '\\"')
+    script = f'''
+tell application "System Events"
+    set p to first application process whose bundle identifier is "{MACOS_JIANYING_BUNDLE_ID}"
+    set fields to text fields of front window of p
+    if (count of fields) is 0 then return "missing"
+    set value of item 1 of fields to "{escaped_query}"
+    keystroke return
+    return "ok"
+end tell
+'''
+    try:
+        return _run_macos_osascript(script, timeout=timeout) == "ok"
+    except JianyingAutomationError:
+        return False
+
+
 def _macos_front_window_rect(*, timeout: float) -> tuple[float, float, float, float]:
     script = f'''
 tell application "System Events"
@@ -439,6 +458,25 @@ end tell
         if "不能获得" in str(exc) or "无效的索引" in str(exc):
             return False
         raise
+
+
+def _macos_window_state(*, timeout: float) -> str:
+    """Classify the front Jianying window without walking its whole AX tree."""
+    script = f'''
+tell application "System Events"
+    set p to first application process whose bundle identifier is "{MACOS_JIANYING_BUNDLE_ID}"
+    set w to front window of p
+    if (count of (static texts of w whose name is "正在导出")) > 0 then return "exporting"
+    if (count of (static texts of w whose name starts with "ExportProgress:")) > 0 then return "exporting"
+    if (count of (static texts of w whose name starts with "MTLSText:")) > 0 then return "editor"
+    if (count of (static texts of w whose name starts with "HomePageDraftTitle:")) > 0 then return "home"
+    return "unknown"
+end tell
+'''
+    try:
+        return _run_macos_osascript(script, timeout=timeout) or "unknown"
+    except JianyingAutomationError:
+        return "unknown"
 
 
 def _macos_export_panel_open(*, timeout: float) -> bool:
@@ -676,8 +714,23 @@ def _open_draft_macos(draft_path: Path, requested_name: str, *, timeout: float) 
             "没有找到 macOS 剪映，请安装“剪映专业版”（VideoFusion-macOS）"
         )
 
-    # Always launch the home screen, then click the local draft. Passing
-    # --draft_path can make Jianying duplicate the directory with a "(1)" suffix.
+    # Always start from the home screen. A previous failed run may have left
+    # Jianying in an editor window; waiting for a home card in that state can
+    # never succeed. Quit the idle editor through the normal application event
+    # and relaunch it. Never interrupt an active export.
+    if _macos_app_running(app_path):
+        # Accessibility queries over a large editor timeline can take several
+        # seconds even though they eventually succeed; do not turn that into
+        # an ``unknown`` state and fall back to an impossible home-card wait.
+        state = _macos_window_state(timeout=12.0)
+        if state == "exporting":
+            raise JianyingAutomationError("剪映正在导出，请等待当前导出完成后再操作")
+        if state == "editor":
+            _macos_quit_application(timeout=min(max(timeout, 10.0), 20.0))
+            time.sleep(1.0)
+
+    # Passing --draft_path can make Jianying duplicate the directory with a
+    # "(1)" suffix, so open the app normally and select the local card.
     if not _macos_app_running(app_path):
         try:
             subprocess.Popen(
@@ -697,6 +750,8 @@ def _open_draft_macos(draft_path: Path, requested_name: str, *, timeout: float) 
     rect = None
     ui_name = draft_path.name
     ui_names = tuple(dict.fromkeys((draft_path.name, requested_name.strip())))
+    search_sent = False
+    search_started_at: float | None = None
     while time.monotonic() < deadline:
         try:
             _macos_focus_process(timeout=min(3.0, max(0.5, deadline - time.monotonic())))
@@ -709,6 +764,15 @@ def _open_draft_macos(draft_path: Path, requested_name: str, *, timeout: float) 
             rect = None
         if rect is not None:
             break
+        if not search_sent:
+            search_sent = _macos_search_home_drafts(requested_name.strip(), timeout=5.0)
+            if search_sent:
+                search_started_at = time.monotonic()
+        elif search_started_at is not None and time.monotonic() - search_started_at > 8.0:
+            # The search field may retain a previous filter after a failed
+            # run. Clear it once before giving up on the exact card.
+            _macos_search_home_drafts("", timeout=5.0)
+            search_started_at = None
         time.sleep(0.5)
     if rect is None:
         raise JianyingAutomationError(
@@ -718,15 +782,29 @@ def _open_draft_macos(draft_path: Path, requested_name: str, *, timeout: float) 
     x, y, width, height = rect
     _macos_post_mouse_click(x + width / 2, y + height / 2, clicks=2)
 
-    # A successful open replaces the home list with the editor window.  Wait
-    # for a stable editor control as the window briefly exists while still blank.
+    # A successful open replaces the home list with the editor window.  The
+    # exact accessibility tree differs between Jianying builds, so the
+    # historical ``VETreeMainCellItem:本地`` marker is only the preferred
+    # signal.  Keep waiting for it, but accept a stable disappearance of the
+    # home-card after a short grace period as a fallback.  Large drafts can
+    # take tens of seconds to finish loading before the editor controls appear.
+    home_missing_since: float | None = None
+    fallback_grace_seconds = min(8.0, max(2.0, timeout * 0.25))
     while time.monotonic() < deadline:
         time.sleep(0.5)
         try:
-            if (
-                _macos_home_draft_rect(ui_name, timeout=2.0) is None
-                and _macos_editor_ready(timeout=2.0)
-            ):
+            home_card = _macos_home_draft_rect(ui_name, timeout=2.0)
+            if home_card is not None:
+                home_missing_since = None
+                continue
+            if _macos_editor_ready(timeout=2.0):
+                return draft_path
+            if home_missing_since is None:
+                home_missing_since = time.monotonic()
+            if time.monotonic() - home_missing_since >= fallback_grace_seconds:
+                # Ensure there is still a real front window before reporting
+                # success; this filters out transient AX lookup failures.
+                _macos_front_window_rect(timeout=2.0)
                 return draft_path
         except JianyingAutomationError:
             pass

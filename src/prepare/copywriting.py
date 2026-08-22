@@ -54,6 +54,19 @@ OUTPUT_PROTOCOL_PROMPT = """
 {"wenan":"第一句话\\n第二句话\\n第三句话"}
 """.strip()
 
+REVISION_SYSTEM_PROMPT = """
+#角色
+你是一名谨慎的文案编辑。用户已经认可现有文案的大部分内容，只希望根据少量意见进行微调。
+
+#修改原则
+1. 只修改用户意见明确涉及的句子和为保证上下文连贯而必须联动的少量句子。
+2. 未被意见涉及的事实、观点、结构、叙述顺序、表达风格和句子尽量原样保留，禁止借机重写整篇。
+3. 不得擅自增加新的主题、事实、案例、数据、人物身份、关注引导或结论。
+4. 用户要求删除时直接删除相关内容；用户要求补充时只补充必要信息；用户要求调整语气时保持原有信息不变。
+5. 输出修改后的完整文案，不要输出修改说明、对比、批注或省略号。
+6. 保持口播文案一句一行，每行表达一个完整动作、事实或因果。
+""".strip()
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="生成 src 的逐行口播文案。")
@@ -179,6 +192,75 @@ def generate_copywriting(
             raise RuntimeError("模型连续返回未按一句一行排版的文案，请重试") from exc
     payload["wenan"] = clean_wenan(str(payload["wenan"]))
     return payload
+
+
+def revise_copywriting(
+    *,
+    original: str,
+    feedback: str,
+    topic: str,
+    api_key: str,
+    model: str = DEFAULT_MODEL,
+    base_url: str = DEFAULT_BASE_URL,
+    max_tokens: int = 4096,
+) -> str:
+    original = clean_wenan(original)
+    feedback = feedback.strip()
+    if not original:
+        raise ValueError("现有文案不能为空")
+    if not feedback:
+        raise ValueError("请先填写修改意见")
+    if not api_key.strip():
+        raise ValueError("缺少 DEEPSEEK_API_KEY")
+
+    user_prompt = "\n\n".join([
+        f"#当前主题\n{topic.strip() or '未命名主题'}",
+        f"#用户修改意见\n{feedback}",
+        f"#现有文案\n{original}",
+        "#任务\n基于现有文案做最小范围修改，并返回修改后的完整文案。",
+    ])
+    client = OpenAI(api_key=api_key.strip(), base_url=base_url.strip() or DEFAULT_BASE_URL)
+    messages = [
+        {"role": "system", "content": REVISION_SYSTEM_PROMPT},
+        {"role": "system", "content": OUTPUT_PROTOCOL_PROMPT},
+        {"role": "user", "content": user_prompt},
+    ]
+    response = client.chat.completions.create(
+        model=model.strip() or DEFAULT_MODEL,
+        messages=messages,
+        response_format={"type": "json_object"},
+        max_tokens=max_tokens,
+    )
+    raw_content = response.choices[0].message.content or ""
+    try:
+        payload = parse_copywriting_payload(raw_content)
+        revised = clean_wenan(str(payload["wenan"]))
+        validate_copywriting_text(revised)
+        return revised
+    except (KeyError, ValueError) as first_error:
+        repair_response = client.chat.completions.create(
+            model=model.strip() or DEFAULT_MODEL,
+            messages=[
+                *messages,
+                {"role": "assistant", "content": raw_content},
+                {
+                    "role": "user",
+                    "content": (
+                        f"上一版结果无法使用：{first_error}\n"
+                        "请继续遵守最小修改原则，返回一句一行的完整文案和严格 JSON。"
+                    ),
+                },
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=max_tokens,
+        )
+        try:
+            payload = parse_copywriting_payload(repair_response.choices[0].message.content or "")
+            revised = clean_wenan(str(payload["wenan"]))
+            validate_copywriting_text(revised)
+            return revised
+        except (KeyError, ValueError) as exc:
+            raise RuntimeError("模型连续返回无法使用的微调文案，请重试") from exc
 
 
 def validate_copywriting_text(text: str, target_chars: int = 0) -> None:

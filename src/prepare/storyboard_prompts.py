@@ -2,8 +2,8 @@
 """Step 04: turn Step 03 shots into image-generation prompt rows.
 
 The input shot is treated as ``title|||narration``.  A shot produces one
-background prompt containing the title and narration, plus two to five
-separate visual-element prompts based on Shot density. Step 05 may add model-specific styling, but
+background prompt containing the title and narration, plus at least two
+separate visual-element prompts.  Step 05 may add model-specific styling, but
 it must not have to reconstruct the storyboard semantics.
 """
 
@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import math
 import os
 import re
 import sys
@@ -28,11 +27,9 @@ DEFAULT_BASE_URL = "https://api.deepseek.com"
 
 CSV_FIELDS = ["element_id", "shot_id", "type", "role", "content", "start_ms", "end_ms"]
 CONTENT_ROLES = {"background", "element"}
-MIN_ELEMENTS_PER_SHOT = 2
-MAX_ELEMENTS_PER_SHOT = 5
-CHARS_PER_ELEMENT = 35
-MS_PER_ELEMENT = 6000
 SHOT_FIELDS = ["shot_id", "分镜标题", "开始时间ms", "结束时间ms", "分镜对应原始文案内容"]
+MIN_ELEMENTS_PER_SHOT = 2
+MAX_ELEMENTS_PER_SHOT = 6
 
 SYSTEM_PROMPT = """#目标
 1. 按照我给你的每个分镜文案内容，生成后续工作流的文生图提示词。
@@ -56,6 +53,7 @@ SYSTEM_PROMPT = """#目标
 7. 每张 element 的信息不能重复，合起来才完整解释该分镜。
 8. 禁止生成空白节点框、空白卡片、只有方块和箭头的抽象占位图、没有业务含义的通用流程图。节点、卡片、箭头只能作为承载具体内容的组成部分，必须看得出它表示什么输入、处理或结果。
 9. element 的主体必须完整、清晰地占据画面大部分，四周仅保留少量纯白边；不要画大面积空白外框，不要把核心对象缩成很小的图标。除非文案必须出现极短标签，否则不放文字。
+10. 元素图数量必须根据分镜内容复杂度决定。出现以下任一情况时，应增加元素图：有多个独立对象；有多个连续步骤；有对比关系；有因果链、输入到处理再到结果；有多个厂商、产品或案例需要分别展示。每个独立对象、步骤、对比项、因果节点或需要分别展示的厂商、产品、案例，都应在元素图中得到清晰体现。
 
 #初始化
 1. 请开始你的表演，做得好我会给你奖励。
@@ -65,10 +63,13 @@ SYSTEM_PROMPT = """#目标
 2. 严格按输入标题顺序逐段输出，每段使用以下纯文本结构；每条内容必须单独占一行：
 【标题1】
 背景图：标题下的一句精简文字要点
-元素图：第一个具体可视化步骤
-元素图：第二个具体可视化步骤
-3. 上面的元素图行只是格式示例；实际输出时必须按照每个标题输入中的数量要求，把“元素图：”行重复 N 次。
-4. 每个标题段必须恰好 1 条“背景图：”和输入中指定的 N 条“元素图：”，不能少于或多于 N 条，N 的上限为 5。每条元素图只表达一个独立、可见的知识步骤、对象、动作、关系或结果；不要把多个步骤压缩到同一张图。不要自行添加其他字段、编号或时间。""".strip()
+元素图1：第一个具体可视化步骤
+元素图2：第二个具体可视化步骤
+    ......
+元素图N：第N个具体可视化步骤
+3. 每个标题段必须恰好 1 条“背景图：”，
+4. 每个标题段至少 2 张、至多 6 张“元素图”；不同“元素图”表达的信息不能重复，内容复杂时优先采用增加“元素图”方案。
+5. 不要添加标题段之外的字段、解释、时间或其他内容。""".strip()
 
 
 def parse_args() -> argparse.Namespace:
@@ -111,6 +112,7 @@ def main() -> int:
                 base_url=args.base_url or os.getenv("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL),
                 max_tokens=args.max_tokens,
                 max_attempts=args.max_attempts,
+                raw_output_path=output.with_name("storyboard_prompts_model_output.txt"),
             )
         write_csv(output, rows)
     except Exception as exc:
@@ -147,11 +149,7 @@ def build_user_prompt(shots: list[dict[str, str]], orientation: str = "") -> str
     ]
     for index, shot in enumerate(shots, start=1):
         title, narration = split_title_content(shot)
-        required = required_element_count(shot)
-        lines.append(
-            f"标题{index}（元素图数量要求：恰好 {required} 张）："
-            f"{title}|||{narration}"
-        )
+        lines.append(f"标题{index}：{title}|||{narration}")
     lines.extend([
         "",
         "#画布方向",
@@ -187,15 +185,20 @@ def generate_with_model(*, system_prompt: str, user_prompt: str, api_key: str, m
 
 def generate_validated_rows(*, shots: list[dict[str, str]], system_prompt: str, user_prompt: str,
                             api_key: str, model: str, base_url: str, max_tokens: int,
-                            max_attempts: int) -> list[dict[str, str]]:
+                            max_attempts: int, raw_output_path: Path | None = None) -> list[dict[str, str]]:
     if max_attempts < 1:
         raise ValueError("max_attempts 必须至少为 1")
     previous_output = ""
     validation_error = ""
+    raw_attempts: list[str] = []
     for attempt in range(1, max_attempts + 1):
         raw = generate_with_model(system_prompt=system_prompt, user_prompt=user_prompt, api_key=api_key,
                                   model=model, base_url=base_url, max_tokens=max_tokens,
                                   previous_output=previous_output, validation_error=validation_error)
+        raw_attempts.append(f"===== 第 {attempt} 次返回 =====\n{raw.strip()}\n")
+        if raw_output_path is not None:
+            raw_output_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_output_path.write_text("\n".join(raw_attempts), encoding="utf-8")
         try:
             return prepare_rows_from_content_plans(parse_model_content(raw, shots), shots)
         except ValueError as exc:
@@ -208,56 +211,99 @@ def generate_validated_rows(*, shots: list[dict[str, str]], system_prompt: str, 
 
 def build_correction_prompt(error: str) -> str:
     return (f"上一版图片内容未通过校验，错误：{error}\n请重新输出覆盖所有标题段的图片内容。"
-            "每个标题段必须有 1 条“背景图：”和输入指定的 N 条“元素图：”，不能少于或多于 N 条，每镜最多 5 张；每条 element 必须表达一个不重复的具体知识步骤、对象、动作、关系或结果，禁止把多个步骤塞进同一张图；背景只写精简文字要点，"
+            "第一行必须直接是“【标题1】”，前面不要写“好的”“以下是结果”等说明，不要使用 Markdown 标题、加粗、列表或代码围栏；最后一条元素图之后立即结束。"
+            "每个标题段必须有 1 条“背景图：”和至少 2 张、至多 6 张“元素图”；元素图编号必须从 1 开始连续递增，内容复杂时优先增加元素图，背景只写精简文字要点，"
+            "如果存在多个独立对象、多个连续步骤、对比关系、因果链（输入到处理再到结果），或多个需要分别展示的厂商、产品、案例，必须增加元素图，不能强行压缩成两张；"
+            "每条 element 必须表达一个不重复的具体知识步骤，主体占画面大部分；"
             "禁止空节点、空卡片和只有方块箭头的抽象占位图。不要输出 CSV、JSON、Markdown 或代码块。")
 
 
 def parse_model_content(text: str, shots: list[dict[str, str]]) -> list[dict[str, object]]:
     """Parse only semantic image content; Python owns all CSV mechanics."""
-    normalized = strip_code_fence(text)
     expected_headers = [f"【标题{index}】" for index in range(1, len(shots) + 1)]
+    normalized = normalize_model_content(text, len(shots))
     plans: list[dict[str, object]] = []
     current: dict[str, object] | None = None
     for line_no, raw_line in enumerate(normalized.splitlines(), start=1):
         line = raw_line.strip()
         if not line:
             continue
-        if line in expected_headers:
+        header = normalize_title_header(line)
+        if header in expected_headers:
             if current is not None:
                 plans.append(current)
-            current = {"header": line, "background": "", "elements": []}
+            current = {"header": header, "background": "", "elements": [], "element_numbered": None}
             continue
         if current is None:
             raise ValueError(f"第{line_no}行必须以标题段“【标题N】”开始")
-        if line.startswith("背景图："):
+        background_match = re.match(r"^背景图\s*[：:]\s*(.*)$", line)
+        if background_match:
             if current["background"]:
                 raise ValueError(f"{current['header']} 有多条背景图内容")
-            current["background"] = line.removeprefix("背景图：").strip()
+            current["background"] = background_match.group(1).strip()
             continue
-        if line.startswith("元素图："):
+        element_match = re.match(r"^元素图\s*(?:(\d+))?\s*[：:]\s*(.*)$", line)
+        if element_match:
             elements = current["elements"]
             assert isinstance(elements, list)
-            elements.append(line.removeprefix("元素图：").strip())
+            number_text, description = element_match.groups()
+            numbered = current["element_numbered"]
+            if number_text is not None:
+                if numbered is False:
+                    raise ValueError(f"{current['header']} 不能混用带编号和不带编号的元素图格式")
+                expected_number = len(elements) + 1
+                if int(number_text) != expected_number:
+                    raise ValueError(
+                        f"{current['header']} 元素图编号必须从 1 开始连续递增，期待元素图{expected_number}"
+                    )
+                current["element_numbered"] = True
+            else:
+                if numbered is True:
+                    raise ValueError(f"{current['header']} 不能混用带编号和不带编号的元素图格式")
+                current["element_numbered"] = False
+            elements.append(description.strip())
             continue
-        raise ValueError(f"第{line_no}行不是“背景图：”或“元素图：”内容")
+        raise ValueError(f"第{line_no}行不是“背景图：”或“元素图N：”内容")
     if current is not None:
         plans.append(current)
     headers = [str(plan["header"]) for plan in plans]
     if headers != expected_headers:
         raise ValueError(f"标题段不完整或顺序错误，应为：{'、'.join(expected_headers)}")
-    for shot, plan in zip(shots, plans, strict=True):
+    for plan in plans:
         if not str(plan["background"]).strip():
             raise ValueError(f"{plan['header']} 缺少背景图内容")
         elements = plan["elements"]
         assert isinstance(elements, list)
-        required = required_element_count(shot)
-        if len(elements) < required:
-            raise ValueError(f"{plan['header']} 至少需要 {required} 条元素图内容")
-        if len(elements) > required:
-            raise ValueError(f"{plan['header']} 恰好需要 {required} 条元素图内容，当前有 {len(elements)} 条")
+        if len(elements) < MIN_ELEMENTS_PER_SHOT:
+            raise ValueError(f"{plan['header']} 至少需要 {MIN_ELEMENTS_PER_SHOT} 条元素图内容")
+        if len(elements) > MAX_ELEMENTS_PER_SHOT:
+            raise ValueError(f"{plan['header']} 最多只能有 {MAX_ELEMENTS_PER_SHOT} 条元素图内容")
         if any(not str(item).strip() for item in elements):
             raise ValueError(f"{plan['header']} 存在空元素图内容")
     return plans
+
+
+def normalize_title_header(line: str) -> str:
+    """Return a canonical title header for harmless model formatting variants."""
+    value = line.strip()
+    value = re.sub(r"^(?:#{1,6}\s*|[-*+]\s+)", "", value)
+    value = value.strip("*_` ")
+    match = re.fullmatch(r"(?:【\s*)?标题\s*(\d+)(?:\s*】)?\s*[：:]?", value)
+    return f"【标题{int(match.group(1))}】" if match else ""
+
+
+def normalize_model_content(text: str, title_count: int) -> str:
+    """Drop only harmless wrapper text before the first recognizable title header."""
+    del title_count
+    normalized = strip_code_fence(text).lstrip("\ufeff")
+    lines = normalized.splitlines()
+    first_header = next(
+        (index for index, line in enumerate(lines) if normalize_title_header(line) == "【标题1】"),
+        None,
+    )
+    if first_header is None:
+        return normalized
+    return "\n".join(lines[first_header:]).strip()
 
 
 def strip_code_fence(value: str) -> str:
@@ -314,26 +360,6 @@ def compose_element_content(description: str) -> str:
     return (
         f"{description}；主体完整清晰地占据画面大部分，四周仅留少量白边，不出现长文字。"
     )
-
-
-def required_element_count(shot: dict[str, str]) -> int:
-    """Estimate how many independent visual beats a Shot needs.
-
-    Duration catches long spoken explanations whose text is compact, while
-    character count catches dense technical sentences. The cap keeps the
-    board readable and matches the layout's supported five-image grid.
-    """
-    narration = re.sub(r"\s+", "", shot.get("分镜对应原始文案内容", ""))
-    characters = len(narration)
-    try:
-        duration_ms = max(0, int(shot.get("结束时间ms", "0")) - int(shot.get("开始时间ms", "0")))
-    except (TypeError, ValueError):
-        duration_ms = 0
-    estimated = max(
-        math.ceil(characters / CHARS_PER_ELEMENT) if characters else 0,
-        math.ceil(duration_ms / MS_PER_ELEMENT) if duration_ms else 0,
-    )
-    return min(MAX_ELEMENTS_PER_SHOT, max(MIN_ELEMENTS_PER_SHOT, estimated))
 
 
 def _shot_map(shots: list[dict[str, str]]) -> dict[str, dict[str, str]]:
@@ -410,11 +436,10 @@ def validate_rows(rows: list[dict[str, str]], shots: list[dict[str, str]]) -> No
         if len([r for r in shot_rows if r["role"] == "background"]) != 1:
             raise ValueError(f"Shot {shot_id} 必须有且仅有一条 background")
         element_count = len([r for r in shot_rows if r["role"] == "element"])
-        required = required_element_count(shot_map[shot_id])
-        if element_count < required:
-            raise ValueError(f"Shot {shot_id} 至少需要 {required} 张元素图")
-        if element_count > required:
-            raise ValueError(f"Shot {shot_id} 恰好需要 {required} 张元素图，当前有 {element_count} 张")
+        if element_count < MIN_ELEMENTS_PER_SHOT:
+            raise ValueError(f"Shot {shot_id} 至少需要 {MIN_ELEMENTS_PER_SHOT} 张元素图")
+        if element_count > MAX_ELEMENTS_PER_SHOT:
+            raise ValueError(f"Shot {shot_id} 最多只能有 {MAX_ELEMENTS_PER_SHOT} 张元素图")
 
 
 def normalize_progressive_timing(rows: list[dict[str, str]], shots: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -440,17 +465,14 @@ def generate_dry_run(shots: list[dict[str, str]]) -> list[dict[str, object]]:
     plans: list[dict[str, object]] = []
     for index, shot in enumerate(shots, start=1):
         title, narration = split_title_content(shot)
-        candidates = [
-            "文案中第一个具体输入、对象或前提条件，展示其可见外观",
-            "文案中紧接着发生的明确处理动作，展示参与对象和实际变化",
-            "文案中的连接关系或中间状态，展示信息如何继续传递",
-            "文案中的限制、风险或对比点，展示它与前述内容的差别",
-            "文案中可见的最终结果或应用场景，展示结果如何产生",
-        ]
         plans.append({
             "header": f"【标题{index}】",
             "background": f"{title}的核心要点：{narration}",
-            "elements": candidates[:required_element_count(shot)],
+            "elements": [
+                "文案中第一个具体输入、对象或前提条件，展示其可见外观",
+                "文案中发生的明确处理动作或因果关系，展示参与对象和实际变化",
+                "文案中可见的最终结果或完整关系，展示结果如何产生",
+            ],
         })
     return plans
 

@@ -23,6 +23,7 @@ from .prepare.image_generation import (
 )
 from .prepare.voice_timeline import DEFAULT_TTS_SPEAKER
 from .prepare.topic_generation import record_topic
+from .prepare.cover import resolve_cover_size
 from .settings import (
     DEFAULT_SUBTITLE_BACKGROUND_COLOR,
     DEFAULT_SUBTITLE_COLOR,
@@ -316,7 +317,10 @@ class Runner:
         for label, command in commands:
             if self._stop_requested.is_set():
                 raise RuntimeError("任务已停止")
-            self.run_command(label, command, env)
+            if is_image_generation_command(command):
+                self.run_image_command_with_missing_retry(label, command, env)
+            else:
+                self.run_command(label, command, env)
         if emit_lifecycle:
             self.log("全部完成")
             self.emit("status", "完成")
@@ -341,6 +345,39 @@ class Runner:
         if code != 0:
             raise subprocess.CalledProcessError(code, command)
         self.log(f"完成：{label}")
+
+    def run_image_command_with_missing_retry(
+        self,
+        label: str,
+        command: list[str],
+        env: dict[str, str],
+    ) -> None:
+        """Run image generation and automatically retry any missing assets once."""
+        initial_error: subprocess.CalledProcessError | None = None
+        try:
+            self.run_command(label, command, env)
+        except subprocess.CalledProcessError as exc:
+            initial_error = exc
+
+        missing = missing_image_ids_for_command(command)
+        if not missing:
+            if initial_error is not None:
+                raise initial_error
+            return
+
+        if self._stop_requested.is_set():
+            raise RuntimeError("任务已停止")
+        self.log(f"{label} 后发现 {len(missing)} 张图片缺失，自动调用“生成缺失图片”：{', '.join(missing)}")
+        retry_command = command_without_image_limit(command)
+        for element_id in missing:
+            retry_command.extend(["--element-id", element_id])
+        self.run_command("生成缺失图片（自动）", retry_command, env)
+
+        remaining = missing_image_ids_for_command(command)
+        if remaining:
+            raise RuntimeError(f"自动生成缺失图片后仍缺少：{', '.join(remaining)}")
+        if initial_error is not None:
+            self.log("自动生成缺失图片完成，已恢复后续流程")
 
 
 def safe_topic(value: str) -> str:
@@ -424,6 +461,107 @@ def _images_complete(prompt_csv: Path) -> bool:
         except OSError:
             return False
     return True
+
+
+def is_image_generation_command(command: list[str]) -> bool:
+    return "src.06_generate_images" in command
+
+
+def image_prompt_csv_from_command(command: list[str]) -> Path | None:
+    try:
+        module_index = command.index("src.06_generate_images")
+        raw_path = command[module_index + 1]
+    except (ValueError, IndexError):
+        return None
+    return Path(raw_path).expanduser().resolve()
+
+
+def missing_image_ids_for_command(command: list[str]) -> list[str]:
+    prompt_csv = image_prompt_csv_from_command(command)
+    if prompt_csv is None or not prompt_csv.is_file():
+        return []
+    try:
+        with prompt_csv.open("r", encoding="utf-8-sig", newline="") as file:
+            rows = list(csv.DictReader(file))
+    except (OSError, csv.Error):
+        return []
+    missing: list[str] = []
+    for row in rows:
+        element_id = str(row.get("element_id", "")).strip()
+        raw_path = str(row.get("asset_path", "")).strip()
+        if not element_id or not raw_path:
+            continue
+        asset = Path(raw_path).expanduser()
+        if not asset.is_absolute():
+            asset = PROJECT_ROOT / asset
+        if not is_valid_image_file(asset):
+            missing.append(element_id)
+    return missing
+
+
+def command_without_image_limit(command: list[str]) -> list[str]:
+    """Remove a caller's limit so the automatic retry can target every missing asset."""
+    result: list[str] = []
+    index = 0
+    while index < len(command):
+        value = command[index]
+        if value == "--limit":
+            index += 2
+            continue
+        result.append(value)
+        index += 1
+    return result
+
+
+def cover_output_path(
+    topic: str,
+    *,
+    output_root: Path = OUTPUT_ROOT,
+    cover_size: str = "",
+) -> Path:
+    """Return the standalone cover artifact path without touching 01-09 output."""
+    name = safe_topic(topic)
+    _key, _label, width, height, _ratio, _orientation = resolve_cover_size(cover_size)
+    return output_root.expanduser().resolve() / name / "cover" / f"{name}_cover_{width}x{height}.png"
+
+
+def build_cover_command(
+    topic: str,
+    *,
+    context: str = "",
+    image_model: str = "",
+    image_quality: str = "",
+    visual_theme: str = "",
+    cover_size: str = "",
+    output_path: Path | None = None,
+    overwrite: bool = True,
+) -> tuple[list[str], Path]:
+    topic = topic.strip()
+    if not topic:
+        raise ValueError("主题不能为空")
+    size_key, _label, _width, _height, _ratio, _orientation = resolve_cover_size(cover_size)
+    output = (output_path or cover_output_path(topic, cover_size=size_key)).expanduser().resolve()
+    command = [
+        sys.executable,
+        "-m",
+        "src.generate_cover",
+        topic,
+        "--output",
+        str(output),
+        "--model",
+        image_model.strip() or DEFAULT_IMAGE_MODEL,
+        "--quality",
+        image_quality.strip(),
+        "--theme",
+        resolve_visual_theme(visual_theme).key,
+        "--size",
+        size_key,
+    ]
+    if context.strip():
+        command.extend(["--context", context.strip()])
+    if overwrite:
+        command.append("--overwrite")
+    return command, output
 
 
 def reuse_completed_materials(options: Options, *, output_root: Path = OUTPUT_ROOT) -> Options:

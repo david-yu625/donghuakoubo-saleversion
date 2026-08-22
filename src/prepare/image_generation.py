@@ -55,6 +55,7 @@ def generate_image(
     base_url: str = "",
     quality: str = "",
     visual_theme: str = "",
+    postprocess: bool = True,
     max_attempts: int = 3,
     retry_delay_seconds: float = 2.0,
 ) -> Path:
@@ -93,6 +94,12 @@ def generate_image(
         )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not postprocess:
+        output_path.write_bytes(image_bytes)
+        if not is_valid_image_file(output_path):
+            raise RuntimeError(f"图片接口返回了无效文件：{output_path}")
+        return output_path
+
     source_path = original_image_path(output_path)
     source_path.parent.mkdir(parents=True, exist_ok=True)
     source_path.write_bytes(image_bytes)
@@ -100,7 +107,8 @@ def generate_image(
     is_shot_background = is_shot_background_prompt(prompt)
     if is_shot_background:
         preserve_white_background(source_path, output_path, width=width, height=height)
-        record_background_content_bounds(output_path)
+        if "#封面图生成" not in prompt:
+            record_background_content_bounds(output_path)
         validate_white_background_png(output_path)
     else:
         crop_white_background(source_path, output_path)
@@ -142,7 +150,8 @@ def is_shot_background_prompt(prompt: str) -> bool:
         "#元素图生成" not in prompt
         and "图片元素设计：" not in prompt
         and (
-            "#背景图生成" in prompt
+            "#封面图生成" in prompt
+            or "#背景图生成" in prompt
             or "#资产：分镜背景图" in prompt
             or "唯一允许出现的文字" in prompt
             or "分镜设计：" in prompt
