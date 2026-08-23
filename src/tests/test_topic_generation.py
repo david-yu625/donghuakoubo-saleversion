@@ -63,6 +63,52 @@ class TopicGenerationTest(unittest.TestCase):
             self.assertIn("看完后能采取什么行动", messages[0]["content"])
             self.assertIn(topic, load_used_topics(output_root=root, history_path=history))
 
+    def test_generate_unique_topic_uses_context_and_selects_best_candidate(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            history = root / "topic_history.jsonl"
+            response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=(
+                '{"candidates":['
+                '{"topic":"什么是操作系统","score":10},'
+                '{"topic":"为什么电脑内存还有很多却会变慢","audience":"普通用户","scenario":"电脑变慢","problem":"判断原因","action":"检查内存和进程","reason":"实用","score":9},'
+                '{"topic":"磁盘清理有哪些误区","audience":"普通用户","scenario":"清理磁盘","problem":"避免误删","action":"按步骤检查","reason":"实用","score":8}'
+                ']}')))])
+            client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=Mock(return_value=response))))
+            with patch("src.prepare.topic_generation.OpenAI", return_value=client):
+                topic = generate_unique_topic(
+                    direction="计算机操作系统",
+                    context="面向普通 Windows 用户，重点讲内存、进程、磁盘原理和提升电脑速度的实际操作。",
+                    api_key="key",
+                    output_root=root,
+                    history_path=history,
+                )
+
+            self.assertEqual(topic, "为什么电脑内存还有很多却会变慢")
+            prompt = client.chat.completions.create.call_args.kwargs["messages"][1]["content"]
+            self.assertIn("面向普通 Windows 用户", prompt)
+            self.assertIn("内存、进程、磁盘原理", prompt)
+
+    def test_similar_topic_subset_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            history = root / "topic_history.jsonl"
+            record_topic("为什么电脑运行越来越慢", history_path=history)
+            response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=(
+                '{"candidates":['
+                '{"topic":"电脑运行越来越慢怎么办","audience":"普通用户","scenario":"电脑变慢","problem":"排查原因","action":"检查系统","reason":"实用","score":10},'
+                '{"topic":"Windows 进程太多怎么排查","audience":"Windows 用户","scenario":"任务管理器进程过多","problem":"找到异常进程","action":"按步骤排查","reason":"实用","score":8}'
+                ']}')))])
+            client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=Mock(return_value=response))))
+            with patch("src.prepare.topic_generation.OpenAI", return_value=client):
+                topic = generate_unique_topic(
+                    direction="计算机操作系统",
+                    api_key="key",
+                    output_root=root,
+                    history_path=history,
+                )
+
+            self.assertEqual(topic, "Windows 进程太多怎么排查")
+
     def test_generate_unique_topics_builds_requested_batch(self):
         with patch(
             "src.prepare.topic_generation.generate_unique_topic",

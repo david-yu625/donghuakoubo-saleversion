@@ -39,6 +39,32 @@ class JianyingAutomationTest(unittest.TestCase):
     def test_windows_export_button_includes_internal_qt_identifier(self):
         self.assertIn("MainWindowTitleBarExportBtn", jianying_automation.EXPORT_BUTTON_NAMES)
 
+    def test_find_windows_control_searches_separate_export_dialog_window(self):
+        class FakeAuto:
+            @staticmethod
+            def ControlFromHandle(hwnd):
+                return f"window-{hwnd}"
+
+        with (
+            patch.object(jianying_automation, "_window_handles", return_value=[10, 20]),
+            patch.object(
+                jianying_automation,
+                "_find_named_control",
+                side_effect=lambda window, names, **kwargs: object() if window == "window-20" else None,
+            ),
+        ):
+            hwnd, window, control = jianying_automation._find_windows_control(
+                FakeAuto(),
+                object(),
+                ("ExportOkBtn",),
+                timeout=1,
+                preferred_hwnd=10,
+            )
+
+        self.assertEqual(hwnd, 20)
+        self.assertEqual(window, "window-20")
+        self.assertIsNotNone(control)
+
     def test_parse_export_path_accepts_windows_drive_path(self):
         self.assertEqual(
             jianying_automation._parse_export_path("D:/8月19日.mp4"),

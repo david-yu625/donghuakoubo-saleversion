@@ -198,7 +198,21 @@ class _WindowsWindowApi:
         self.user32.SetForegroundWindow(hwnd)
 
     def close(self, hwnd: int) -> None:
+        # Qt-based Jianying builds are not consistent about handling a bare
+        # WM_CLOSE.  Send the normal system close command first, then retain
+        # WM_CLOSE as a fallback for builds that do not expose a system menu.
+        self.user32.PostMessageW(hwnd, 0x0112, 0xF060, 0)  # WM_SYSCOMMAND/SC_CLOSE
         self.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+
+    def terminate_process_tree(self, pid: int) -> None:
+        """Terminate only Jianying's process tree after export is complete."""
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=5.0,
+        )
 
 
 def _window_handles(process_name: str, window_api: _WindowsWindowApi) -> list[int]:
@@ -279,6 +293,46 @@ def _activate_window(hwnd: int, window_api: _WindowsWindowApi) -> None:
         window_api.restore_and_focus(hwnd)
     except Exception:
         pass
+
+
+def _find_windows_control(
+    auto,
+    window_api: _WindowsWindowApi,
+    names: tuple[str, ...],
+    *,
+    timeout: float,
+    contains: bool = False,
+    preferred_hwnd: int | None = None,
+):
+    """Find a control across Jianying's top-level windows.
+
+    Export settings are a separate Qt window in some Windows builds and a
+    child of the editor window in others. Searching only the editor root makes
+    the final export button appear to be missing on the former builds.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        handles = _window_handles(JIANYING_PROCESS_NAME, window_api)
+        if preferred_hwnd in handles:
+            handles.remove(preferred_hwnd)
+            handles.insert(0, preferred_hwnd)
+        for hwnd in handles:
+            try:
+                window = auto.ControlFromHandle(hwnd)
+            except Exception:
+                continue
+            if window is None:
+                continue
+            control = _find_named_control(
+                window,
+                names,
+                timeout=min(0.5, max(0.05, deadline - time.monotonic())),
+                contains=contains,
+            )
+            if control is not None:
+                return hwnd, window, control
+        time.sleep(0.2)
+    return None, None, None
 
 
 def _open_draft_windows(draft_path: Path, draft_name: str, *, timeout: float) -> Path:
@@ -563,8 +617,13 @@ def _parse_export_path(value: str) -> Path | None:
     candidate = Path(raw).expanduser()
     if candidate.suffix.casefold() not in {".mp4", ".mov", ".m4v"}:
         return None
-    if candidate.is_absolute() or raw.startswith("~"):
+    if raw.startswith("~"):
         return candidate.resolve()
+    # ``Path.is_absolute`` on Windows does not recognize a POSIX-rooted path
+    # such as ``/Users/...``. Keep that spelling intact for macOS values read
+    # through a Windows test or compatibility layer.
+    if candidate.is_absolute() or raw.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", raw):
+        return candidate
     return None
 
 
@@ -872,27 +931,54 @@ def _click_export_windows(*, timeout: float) -> Path | None:
         except Exception:
             export_path = None
 
-    final_button = _find_named_control(
-        window,
-        ("ExportOkBtn",),
-        timeout=min(timeout, 8.0),
-        contains=False,
+    # The final button has used several internal names across Jianying
+    # versions. Prefer internal identifiers, then allow the visible Chinese
+    # labels as a compatibility fallback. Search every process window because
+    # the export settings dialog may have its own HWND.
+    final_button_hwnd, final_button_window, final_button = _find_windows_control(
+        auto,
+        window_api,
+        (
+            "ExportOkBtn",
+            "ExportConfirmBtn",
+            "ExportConfirmButton",
+            "StartExportBtn",
+            "StartExportButton",
+            "ExportButton",
+            "ExportBtn",
+        ),
+        timeout=min(timeout, 12.0),
+        contains=True,
+        preferred_hwnd=hwnd,
     )
     if final_button is None:
+        final_button_hwnd, final_button_window, final_button = _find_windows_control(
+            auto,
+            window_api,
+            ("开始导出", "确认导出", "导出视频"),
+            timeout=min(timeout, 4.0),
+            contains=True,
+            preferred_hwnd=hwnd,
+        )
+    if final_button is None:
         raise JianyingAutomationError("已打开导出设置，但没有找到最终导出按钮")
+    _activate_window(final_button_hwnd, window_api)
     try:
         final_button.Click()
     except Exception as exc:
         raise JianyingAutomationError(f"点击最终导出失败：{exc}") from exc
 
-    success_button = _find_named_control(
-        window,
-        ("ExportSucceedCloseBtn",),
+    success_hwnd, success_window, success_button = _find_windows_control(
+        auto,
+        window_api,
+        ("ExportSucceedCloseBtn", "ExportSuccessCloseBtn", "关闭导出", "完成"),
         timeout=max(timeout, 1200.0),
-        contains=False,
+        contains=True,
+        preferred_hwnd=final_button_hwnd,
     )
     if success_button is None:
         raise JianyingAutomationError("导出已开始，但等待导出完成超时")
+    _activate_window(success_hwnd, window_api)
     try:
         success_button.Click()
     except Exception as exc:
@@ -906,7 +992,7 @@ def _click_export_windows(*, timeout: float) -> Path | None:
     except Exception as exc:
         raise JianyingAutomationError(f"关闭剪映编辑器失败：{exc}") from exc
 
-    close_deadline = time.monotonic() + max(5.0, min(timeout, 15.0))
+    close_deadline = time.monotonic() + max(15.0, min(max(timeout, 45.0), 60.0))
     no_window_since = None
     while time.monotonic() < close_deadline:
         handles = _window_handles(JIANYING_PROCESS_NAME, window_api)
@@ -930,9 +1016,9 @@ def _click_export_windows(*, timeout: float) -> Path | None:
                 continue
             confirm_button = _find_named_control(
                 remaining_window,
-                ("automationconfirmBtn", "确认"),
+                ("automationconfirmBtn", "确认", "确定", "退出", "退出剪映", "OK", "是"),
                 timeout=0.3,
-                contains=False,
+                contains=True,
             )
             if confirm_button is not None:
                 try:
@@ -945,11 +1031,52 @@ def _click_export_windows(*, timeout: float) -> Path | None:
             for remaining_hwnd in handles:
                 try:
                     window_api.restore_and_focus(remaining_hwnd)
-                    window_api.close(remaining_hwnd)
+                    # UIA's WindowControl.Close handles some modal Qt windows
+                    # more reliably than posting a Win32 message.  Keep the
+                    # Win32 path as the fallback because not every Jianying
+                    # top-level window is exposed as a WindowControl.
+                    remaining_window = auto.ControlFromHandle(remaining_hwnd)
+                    close_method = getattr(remaining_window, "Close", None)
+                    if callable(close_method):
+                        try:
+                            close_method()
+                        except Exception:
+                            window_api.close(remaining_hwnd)
+                    else:
+                        window_api.close(remaining_hwnd)
                 except Exception as exc:
                     raise JianyingAutomationError(f"关闭剪映首页失败：{exc}") from exc
         time.sleep(0.4)
     else:
+        # Export has already completed successfully.  Give Jianying one last
+        # graceful close pass before reporting a real failure; a slow home
+        # window must not turn a valid exported video into a failed operation.
+        remaining_handles = _window_handles(JIANYING_PROCESS_NAME, window_api)
+        process_ids = set()
+        for remaining_hwnd in remaining_handles:
+            try:
+                process_ids.add(window_api.process_id(remaining_hwnd))
+                window_api.restore_and_focus(remaining_hwnd)
+                window_api.close(remaining_hwnd)
+            except Exception:
+                pass
+        time.sleep(1.0)
+        if not _window_handles(JIANYING_PROCESS_NAME, window_api):
+            return export_path
+        # At this point rendering is already confirmed complete. Jianying can
+        # occasionally keep a Qt window alive after accepting WM_CLOSE; kill
+        # only the captured Jianying process tree so the exported file remains
+        # a successful result and no stale editor is left behind.
+        terminate = getattr(window_api, "terminate_process_tree", None)
+        if callable(terminate):
+            for pid in process_ids:
+                try:
+                    terminate(pid)
+                except Exception:
+                    pass
+            time.sleep(1.0)
+            if not _window_handles(JIANYING_PROCESS_NAME, window_api):
+                return export_path
         raise JianyingAutomationError("导出已完成，但关闭剪映窗口超时")
     return export_path
 

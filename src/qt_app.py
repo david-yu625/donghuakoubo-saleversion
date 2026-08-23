@@ -115,7 +115,12 @@ from .pipeline_runtime import (
     update_env_file,
     save_copywriting_text,
 )
-from .prepare.cover import COVER_SIZE_OPTIONS, build_cover_prompt, resolve_cover_size
+from .prepare.cover import (
+    COVER_SIZE_OPTIONS,
+    DEFAULT_COVER_SIZE_KEY,
+    build_cover_prompt,
+    resolve_cover_size,
+)
 from .prepare.copywriting import revise_copywriting
 from .prepare.topic_generation import generate_unique_topic, generate_unique_topics
 
@@ -554,14 +559,14 @@ class PipelineWindow(QMainWindow):
             QStyle.SP_FileDialogContentsView,
             self.generate_new_topic,
         )
-        self.topic_generate_button.setToolTip("在指定选题方向下生成一个未重复的具体主题")
+        self.topic_generate_button.setToolTip("结合选题方向和上下文，筛选一个实用且未重复的具体主题")
         grid.addWidget(self.topic_generate_button, 1, 5)
         self.batch_topic_generate_button = self._button(
             "批量生成主题",
             QStyle.SP_FileDialogListView,
             self.generate_batch_topics,
         )
-        self.batch_topic_generate_button.setToolTip("在指定选题方向下生成一组互不重复的具体主题")
+        self.batch_topic_generate_button.setToolTip("结合选题方向和上下文，生成一组互不重复的具体主题")
         grid.addWidget(self.batch_topic_generate_button, 1, 6, 1, 2)
 
         topic_label = QLabel("主题")
@@ -663,6 +668,7 @@ class PipelineWindow(QMainWindow):
         if not self._can_start_topic_generation():
             return
         direction = self.inputs["topic_direction"].text().strip()
+        context = self.context_input.toPlainText().strip() if self.context_input is not None else ""
         if not direction:
             QMessageBox.information(self, "缺少选题方向", "请先填写选题方向。")
             return
@@ -670,7 +676,7 @@ class PipelineWindow(QMainWindow):
 
         def worker() -> None:
             try:
-                self.topic_generated.emit(generate_unique_topic(direction=direction))
+                self.topic_generated.emit(generate_unique_topic(direction=direction, context=context))
             except Exception as exc:
                 self.topic_generation_failed.emit(str(exc))
 
@@ -681,6 +687,7 @@ class PipelineWindow(QMainWindow):
         if not self._can_start_topic_generation():
             return
         direction = self.inputs["topic_direction"].text().strip()
+        context = self.context_input.toPlainText().strip() if self.context_input is not None else ""
         if not direction:
             QMessageBox.information(self, "缺少选题方向", "请先填写选题方向。")
             return
@@ -699,7 +706,7 @@ class PipelineWindow(QMainWindow):
 
         def worker() -> None:
             try:
-                self.batch_topics_generated.emit(generate_unique_topics(count, direction=direction))
+                self.batch_topics_generated.emit(generate_unique_topics(count, direction=direction, context=context))
             except Exception as exc:
                 self.topic_generation_failed.emit(str(exc))
 
@@ -845,6 +852,9 @@ class PipelineWindow(QMainWindow):
         self.cover_size_combo = QComboBox()
         for key, label, _width, _height, _ratio, _orientation in COVER_SIZE_OPTIONS:
             self.cover_size_combo.addItem(label, key)
+        self.cover_size_combo.setCurrentIndex(
+            max(0, self.cover_size_combo.findData(DEFAULT_COVER_SIZE_KEY))
+        )
         self.cover_size_combo.currentIndexChanged.connect(self._update_cover_prompt_preview)
         form.addWidget(self.cover_size_combo, 0, 1, 1, 2)
 
@@ -2422,12 +2432,12 @@ class PipelineWindow(QMainWindow):
 
     def _current_cover_size(self) -> tuple[str, str, int, int, str, str]:
         if self.cover_size_combo is None:
-            return COVER_SIZE_OPTIONS[0]
+            return resolve_cover_size(DEFAULT_COVER_SIZE_KEY)
         value = self.cover_size_combo.currentData()
         try:
             return resolve_cover_size(str(value or ""))
         except ValueError:
-            return COVER_SIZE_OPTIONS[0]
+            return resolve_cover_size(DEFAULT_COVER_SIZE_KEY)
 
     def _update_cover_prompt_preview(self, _value: str = "") -> None:
         if self.cover_prompt_preview is None:

@@ -21,8 +21,10 @@ COVER_SIZE_OPTIONS = (
     ("portrait_1440", "1080×1440（竖版）", 1080, 1440, "3:4", "竖版"),
 )
 COVER_SIZE_KEYS = tuple(item[0] for item in COVER_SIZE_OPTIONS)
-COVER_WIDTH = COVER_SIZE_OPTIONS[0][2]
-COVER_HEIGHT = COVER_SIZE_OPTIONS[0][3]
+DEFAULT_COVER_SIZE_KEY = "portrait_1440"
+DEFAULT_COVER_SIZE = next(item for item in COVER_SIZE_OPTIONS if item[0] == DEFAULT_COVER_SIZE_KEY)
+COVER_WIDTH = DEFAULT_COVER_SIZE[2]
+COVER_HEIGHT = DEFAULT_COVER_SIZE[3]
 COVER_PROMPT_TEMPLATE = """#封面图生成
 #画布
 1. 生成一张 {width}×{height}、{ratio} 的{orientation}科普短视频作品封面。
@@ -65,7 +67,7 @@ def resolve_cover_size(value: str = "") -> tuple[str, str, int, int, str, str]:
         if normalized in aliases:
             return option
     if not normalized:
-        return COVER_SIZE_OPTIONS[0]
+        return DEFAULT_COVER_SIZE
     raise ValueError(f"不支持的封面尺寸：{value}")
 
 

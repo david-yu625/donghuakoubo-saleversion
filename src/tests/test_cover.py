@@ -11,6 +11,7 @@ from ..pipeline_runtime import build_cover_command, cover_output_path
 from ..prepare.cover import (
     COVER_HEIGHT,
     COVER_SIZE_OPTIONS,
+    DEFAULT_COVER_SIZE_KEY,
     COVER_WIDTH,
     build_cover_prompt,
     default_cover_path,
@@ -22,11 +23,11 @@ from ..prepare.image_generation import is_shot_background_prompt
 
 
 class CoverWorkflowTest(unittest.TestCase):
-    def test_cover_prompt_defaults_to_portrait_requirements(self):
+    def test_cover_prompt_defaults_to_1080x1440_requirements(self):
         prompt = build_cover_prompt("计算机的组成", "突出 CPU、内存和存储的关系")
 
-        self.assertIn("1080×1920", prompt)
-        self.assertIn("9:16", prompt)
+        self.assertIn("1080×1440", prompt)
+        self.assertIn("3:4", prompt)
         self.assertIn("主题文字：计算机的组成", prompt)
         self.assertIn("准确、完整、清晰", prompt)
         self.assertIn("黑色手绘圆角矩形边框", prompt)
@@ -41,11 +42,11 @@ class CoverWorkflowTest(unittest.TestCase):
             root = Path(directory)
             self.assertEqual(
                 default_cover_path("测试主题", root),
-                (root / "测试主题" / "cover" / "测试主题_cover_1080x1920.png").resolve(),
+                (root / "测试主题" / "cover" / "测试主题_cover_1080x1440.png").resolve(),
             )
             self.assertEqual(
                 cover_output_path("测试主题", output_root=root),
-                (root / "测试主题" / "cover" / "测试主题_cover_1080x1920.png").resolve(),
+                (root / "测试主题" / "cover" / "测试主题_cover_1080x1440.png").resolve(),
             )
 
     def test_cover_sizes_and_commands(self):
@@ -68,7 +69,8 @@ class CoverWorkflowTest(unittest.TestCase):
             output_path=Path("/tmp/test_cover.png"),
         )
 
-        self.assertEqual((COVER_WIDTH, COVER_HEIGHT), (1080, 1920))
+        self.assertEqual(DEFAULT_COVER_SIZE_KEY, "portrait_1440")
+        self.assertEqual((COVER_WIDTH, COVER_HEIGHT), (1080, 1440))
         self.assertIn("src.generate_cover", command)
         self.assertEqual(command[command.index("--output") + 1], str(output))
         self.assertEqual(command[command.index("--model") + 1], "gpt-image-2")
