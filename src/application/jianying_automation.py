@@ -7,6 +7,7 @@ only operates on a draft that already exists in Jianying's draft directory.
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 import subprocess
 import time
@@ -627,6 +628,35 @@ def _parse_export_path(value: str) -> Path | None:
     return None
 
 
+def relocate_exported_video(source: Path, target: Path) -> Path:
+    """Place Jianying's completed export at the project's canonical path."""
+    source = source.expanduser().resolve()
+    target = target.expanduser().resolve()
+    if source == target:
+        if not target.is_file():
+            raise JianyingAutomationError(f"剪映导出文件不存在：{target}")
+        return target
+    if not source.is_file():
+        raise JianyingAutomationError(f"剪映导出文件不存在：{source}")
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.tmp")
+    try:
+        temporary.unlink(missing_ok=True)
+        shutil.copy2(source, temporary)
+        temporary.replace(target)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        raise JianyingAutomationError(f"无法将导出视频保存到项目目录：{target}：{exc}") from exc
+    try:
+        source.unlink()
+    except OSError:
+        # The final project copy is complete. A media scanner may briefly keep
+        # Jianying's original file open, so cleanup must not invalidate export.
+        pass
+    return target
+
+
 def _macos_export_path(*, timeout: float) -> Path | None:
     """Read the exact output file shown in Jianying's export settings."""
     script = f'''
@@ -1213,9 +1243,14 @@ def open_draft_and_click_export_with_path(
     draft_name: str,
     *,
     timeout: float = 30.0,
+    target_path: Path | None = None,
 ) -> tuple[Path, Path | None]:
     path = open_draft(draft_folder, draft_name, timeout=timeout)
     export_path = click_export(timeout=timeout)
+    if target_path is not None:
+        if export_path is None:
+            raise JianyingAutomationError("剪映导出完成，但无法读取生成的视频路径")
+        export_path = relocate_exported_video(export_path, target_path)
     return path, export_path
 
 

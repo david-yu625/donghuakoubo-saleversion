@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from ..paths import VIDEO_EXPORT_VARIANTS, safe_topic, video_export_path
+
 
 DOUYIN_UPLOAD_URL = "https://creator.douyin.com/creator-micro/content/upload"
 DOUYIN_PROFILE_NAME = "animation-narration-douyin"
@@ -101,9 +103,8 @@ def discover_publish_assets(
 ) -> tuple[Path | None, Path | None]:
     """Find the current topic's latest video and generated cover.
 
-    Export destinations are user-configurable in Jianying, so the search uses
-    the project output first and then common local video folders.  A preferred
-    path (for example the path returned by the export automation) always wins.
+    Canonical project exports are preferred. Common local video folders remain
+    as a compatibility fallback for videos exported before project-managed paths.
     """
     topic = topic.strip()
     topic_key = _normalized_name(topic)
@@ -111,20 +112,26 @@ def discover_publish_assets(
     home = (home or Path.home()).expanduser().resolve()
 
     video_candidates: dict[Path, int] = {}
-    roots = [output_root / topic, output_root / _safe_topic(topic)]
+    for variant in VIDEO_EXPORT_VARIANTS:
+        canonical = video_export_path(output_root, topic, variant)
+        if canonical.is_file():
+            video_candidates[canonical] = 3000
+
+    project_roots = list(dict.fromkeys((output_root / topic, output_root / safe_topic(topic))))
+    roots = list(project_roots)
     roots.extend(home / name for name in ("Movies", "Videos", "Downloads", "Desktop"))
     for root in roots:
         if not root.is_dir():
             continue
         try:
-            paths = root.rglob("*") if root in roots[:2] else root.glob("*")
+            paths = root.rglob("*") if root in project_roots else root.glob("*")
             for path in paths:
                 if not path.is_file() or path.suffix.lower() not in VIDEO_SUFFIXES:
                     continue
                 score = 0
                 if topic_key and topic_key in _normalized_name(path.stem):
                     score += 1000
-                if root == output_root / topic or root == output_root / _safe_topic(topic):
+                if root in project_roots:
                     score += 500
                 video_candidates[path.resolve()] = score
         except OSError:
@@ -132,7 +139,7 @@ def discover_publish_assets(
     video = _choose_asset(preferred_video, video_candidates)
 
     cover_candidates: list[Path] = []
-    cover_root = output_root / _safe_topic(topic) / "cover"
+    cover_root = output_root / safe_topic(topic) / "cover"
     if cover_root.is_dir():
         try:
             cover_candidates = [
@@ -163,10 +170,6 @@ def _mtime_ns(path: Path) -> int:
         return path.stat().st_mtime_ns
     except OSError:
         return 0
-
-
-def _safe_topic(value: str) -> str:
-    return re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", value).strip(" .") or "未命名主题"
 
 
 def _normalized_name(value: str) -> str:

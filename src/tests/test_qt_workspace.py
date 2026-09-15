@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import ANY, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -49,7 +50,9 @@ class QtWorkspaceTest(unittest.TestCase):
         self.assertTrue(self.window.inputs["topic"].isVisibleTo(self.window.project_panel))
         self.assertTrue(self.window.workflow_actions.isHidden())
 
-        self.window._select_workflow_stage("作品发布")
+        with patch.object(self.window, "scan_publish_assets") as scan_publish_assets:
+            self.window._select_workflow_stage("作品发布")
+        scan_publish_assets.assert_called_once_with(preserve_manual=True)
         self.assertEqual(self.window.workflow_mode.currentText(), WORKFLOW_PUBLISH)
         self.assertEqual(self.window.workflow_tabs.currentIndex(), 3)
         self.assertTrue(self.window.workflow_actions.isHidden())
@@ -67,6 +70,19 @@ class QtWorkspaceTest(unittest.TestCase):
         self.assertFalse(self.window.continue_button.isHidden())
         self.assertFalse(self.window.start_button.isHidden())
 
+    def test_changing_topic_clears_publish_assets_from_previous_topic(self):
+        self.window.douyin_video_input.setText("/tmp/old-topic.mp4")
+        self.window.douyin_cover_input.setText("/tmp/old-topic.png")
+        self.window._last_jianying_export_path = Path("/tmp/old-topic.mp4")
+        self.window._automation_export_target = Path("/tmp/canonical-old-topic.mp4")
+
+        self.window.inputs["topic"].setText("新主题")
+
+        self.assertEqual(self.window.douyin_video_input.text(), "")
+        self.assertEqual(self.window.douyin_cover_input.text(), "")
+        self.assertIsNone(self.window._last_jianying_export_path)
+        self.assertIsNone(self.window._automation_export_target)
+
     def test_batch_topic_generation_allows_empty_direction(self):
         class ImmediateThread:
             def __init__(self, *, target, daemon):
@@ -75,6 +91,9 @@ class QtWorkspaceTest(unittest.TestCase):
 
             def start(self):
                 self.target()
+
+            def is_alive(self):
+                return False
 
         self.window.inputs["topic_direction"].clear()
         self.window.inputs["topic"].setText("当前主题")

@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ..paths import default_draft_folder, resolve_draft_folder
+from ..paths import default_draft_folder, resolve_draft_folder, video_export_path
 
 
 class ProjectPathsTest(unittest.TestCase):
@@ -60,6 +60,14 @@ class ProjectPathsTest(unittest.TestCase):
             resolve_draft_folder(custom, platform="darwin", home=Path("/Users/tester")),
             custom,
         )
+
+    def test_video_export_path_is_stable_and_topic_scoped(self):
+        self.assertEqual(
+            video_export_path(Path("/project/output"), " 什么是 AI？ ", "portrait_package"),
+            Path("/project/output/什么是AI？/portrait_package/什么是AI？_portrait_package.mp4"),
+        )
+        with self.assertRaisesRegex(ValueError, "视频版本"):
+            video_export_path(Path("/project/output"), "主题", "unknown")
 
 
 if __name__ == "__main__":

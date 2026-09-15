@@ -78,7 +78,7 @@ from .application.douyin_publisher import (
     open_douyin_upload_page,
     publish_to_douyin,
 )
-from .paths import portrait_package_dir, resolve_draft_folder
+from .paths import portrait_package_dir, resolve_draft_folder, video_export_path
 from .pipeline_runtime import (
     API_FIELDS,
     API_DEFAULTS,
@@ -385,6 +385,7 @@ class PipelineWindow(QMainWindow):
         self._douyin_last_publish_succeeded = False
         self._auto_run_step09 = False
         self._automation_draft_target: tuple[Path, str] | None = None
+        self._automation_export_target: Path | None = None
         self._automation_last_status = "未执行"
         self._chain_portrait_after_export = False
         self._portrait_chain_attempts = 0
@@ -1754,9 +1755,24 @@ class PipelineWindow(QMainWindow):
             resolve_draft_folder(options.draft_folder),
             draft_name,
         )
+        self._automation_export_target = video_export_path(
+            OUTPUT_ROOT,
+            options.topic,
+            orientation_key(options.orientation),
+        )
 
     def _automation_target(self) -> tuple[Path, str]:
         return self._automation_draft_target or self._current_jianying_draft()
+
+    def _export_target_for_draft(self, draft_name: str) -> Path:
+        name = draft_name.casefold()
+        if "_portrait_package" in name:
+            variant = "portrait_package"
+        elif "_portrait" in name:
+            variant = "portrait"
+        else:
+            variant = "landscape"
+        return video_export_path(OUTPUT_ROOT, self.inputs["topic"].text(), variant)
 
     def _start_jianying_automation(self) -> None:
         if self._jianying_automation_thread is not None and self._jianying_automation_thread.is_alive():
@@ -1792,7 +1808,9 @@ class PipelineWindow(QMainWindow):
         self._automation_last_status = "运行中"
         if self._chain_portrait_after_export:
             self._last_jianying_export_path = None
+        export_target = self._automation_export_target or self._export_target_for_draft(draft_name)
         self.log.appendPlainText(f"剪映操作：打开草稿并开始导出 -> {draft_path}")
+        self.log.appendPlainText(f"成片将保存到：{export_target}")
         self._set_jianying_automation_enabled(False)
 
         def worker() -> None:
@@ -1805,6 +1823,7 @@ class PipelineWindow(QMainWindow):
                     draft_folder,
                     draft_name,
                     timeout=automation_timeout,
+                    target_path=export_target,
                 )
                 self._last_jianying_export_path = export_path
                 detail = f"，导出路径：{export_path}" if export_path is not None else ""
@@ -2044,7 +2063,7 @@ class PipelineWindow(QMainWindow):
         ):
             self.douyin_title_input.setText(value.strip())
 
-    def scan_publish_assets(self) -> None:
+    def scan_publish_assets(self, *, preserve_manual: bool = False) -> None:
         if self.douyin_video_input is None or self.douyin_cover_input is None:
             return
         topic = self.inputs["topic"].text().strip()
@@ -2055,10 +2074,14 @@ class PipelineWindow(QMainWindow):
             preferred_cover=self.cover_artifact_path() if topic else None,
             home=Path.home(),
         )
-        if video is not None:
+        current_video = self.douyin_video_input.text().strip()
+        current_cover = self.douyin_cover_input.text().strip()
+        can_replace_video = not preserve_manual or not current_video or current_video == self._douyin_last_auto_video
+        can_replace_cover = not preserve_manual or not current_cover or current_cover == self._douyin_last_auto_cover
+        if video is not None and can_replace_video:
             self.douyin_video_input.setText(str(video))
             self._douyin_last_auto_video = str(video)
-        if cover is not None:
+        if cover is not None and can_replace_cover:
             self.douyin_cover_input.setText(str(cover))
             self._douyin_last_auto_cover = str(cover)
         if self.douyin_title_input is not None and (
@@ -2093,6 +2116,7 @@ class PipelineWindow(QMainWindow):
         assert self.douyin_title_input is not None
         assert self.douyin_topics_input is not None
         assert self.douyin_description_input is not None
+        self.scan_publish_assets(preserve_manual=True)
         request = DouyinPublishRequest(
             video_path=Path(self.douyin_video_input.text().strip()),
             cover_path=Path(self.douyin_cover_input.text().strip()) if self.douyin_cover_input.text().strip() else None,
@@ -2208,6 +2232,8 @@ class PipelineWindow(QMainWindow):
         if orientation_combo is not None:
             orientation_combo.setCurrentText(self._workflow_orientation())
         self._update_primary_action()
+        if publish:
+            self.scan_publish_assets(preserve_manual=True)
         if self.batch_topic_label is not None:
             self.batch_topic_label.setVisible(True)
         if self.batch_topic_generate_button is not None:
@@ -2460,6 +2486,11 @@ class PipelineWindow(QMainWindow):
         self._automation_draft_target = (
             resolve_draft_folder(self.setting_inputs["DRAFT_FOLDER"].text()),
             draft_name,
+        )
+        self._automation_export_target = video_export_path(
+            OUTPUT_ROOT,
+            project.topic,
+            "portrait_package",
         )
         title = project.topic if self.package_title_checkbox.isChecked() else ""
         command = build_portrait_package_command(
@@ -2815,6 +2846,15 @@ class PipelineWindow(QMainWindow):
 
     def _on_workspace_topic_changed(self, _value: str = "") -> None:
         self._douyin_last_publish_succeeded = False
+        self._automation_draft_target = None
+        self._automation_export_target = None
+        self._last_jianying_export_path = None
+        if self.douyin_video_input is not None:
+            self.douyin_video_input.clear()
+        if self.douyin_cover_input is not None:
+            self.douyin_cover_input.clear()
+        self._douyin_last_auto_video = ""
+        self._douyin_last_auto_cover = ""
         self._update_stage_statuses()
 
     def _update_stage_statuses(self) -> None:

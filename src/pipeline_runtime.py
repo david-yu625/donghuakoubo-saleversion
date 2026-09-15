@@ -5,7 +5,6 @@ from __future__ import annotations
 import csv
 import os
 import queue
-import re
 import subprocess
 import sys
 import threading
@@ -14,7 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .core.models import orientation_key
-from .paths import default_draft_folder, resolve_draft_folder
+from .paths import default_draft_folder, resolve_draft_folder, safe_topic
 from .prepare.image_generation import (
     DEFAULT_IMAGE_BASE_URL,
     DEFAULT_IMAGE_MODEL,
@@ -378,11 +377,6 @@ class Runner:
             raise RuntimeError(f"自动生成缺失图片后仍缺少：{', '.join(remaining)}")
         if initial_error is not None:
             self.log("自动生成缺失图片完成，已恢复后续流程")
-
-
-def safe_topic(value: str) -> str:
-    name = re.sub(r'[\\/:*?"<>|\s]+', "", value.strip())
-    return name or "未命名"
 
 
 def draft_name_for_orientation(name: str, orientation: str = "") -> str:

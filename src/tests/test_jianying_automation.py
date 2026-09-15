@@ -71,6 +71,30 @@ class JianyingAutomationTest(unittest.TestCase):
             Path("D:/8月19日.mp4"),
         )
 
+    def test_export_workflow_relocates_video_to_project_path(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "desktop" / "temporary.mp4"
+            source.parent.mkdir()
+            source.write_bytes(b"new-video")
+            target = root / "output" / "主题" / "landscape" / "主题_landscape.mp4"
+            target.parent.mkdir(parents=True)
+            target.write_bytes(b"old-video")
+
+            with (
+                patch.object(jianying_automation, "open_draft", return_value=root / "drafts" / "主题"),
+                patch.object(jianying_automation, "click_export", return_value=source),
+            ):
+                _draft, result = jianying_automation.open_draft_and_click_export_with_path(
+                    root / "drafts",
+                    "主题",
+                    target_path=target,
+                )
+
+            self.assertEqual(result, target.resolve())
+            self.assertEqual(target.read_bytes(), b"new-video")
+            self.assertFalse(source.exists())
+
     def test_open_draft_windows_clicks_parent_of_home_page_title(self):
         class FakeAuto:
             @staticmethod

@@ -1,8 +1,26 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path, PureWindowsPath
+
+
+VIDEO_EXPORT_VARIANTS = ("landscape", "portrait", "portrait_package")
+
+
+def safe_topic(value: str) -> str:
+    """Return the directory-safe topic spelling used throughout output/."""
+    name = re.sub(r'[\\/:*?"<>|\s]+', "", value.strip())
+    return name or "未命名"
+
+
+def video_export_path(output_root: Path, topic: str, variant: str) -> Path:
+    """Return the canonical final-video path for one topic and video variant."""
+    if variant not in VIDEO_EXPORT_VARIANTS:
+        raise ValueError(f"不支持的视频版本：{variant}")
+    name = safe_topic(topic)
+    return (output_root.expanduser().resolve() / name / variant / f"{name}_{variant}.mp4")
 
 
 def default_draft_folder(

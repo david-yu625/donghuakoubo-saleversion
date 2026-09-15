@@ -182,3 +182,18 @@ class DouyinPublisherTest(unittest.TestCase):
             )
             self.assertEqual(video, explicit.resolve())
             self.assertEqual(cover, second.resolve())
+
+    def test_discover_publish_assets_finds_canonical_topic_export(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            video = root / "什么是AI" / "portrait" / "什么是AI_portrait.mp4"
+            video.parent.mkdir(parents=True)
+            video.write_bytes(b"video")
+
+            discovered, _cover = discover_publish_assets(
+                "什么是 AI",
+                output_root=root,
+                home=root / "empty-home",
+            )
+
+            self.assertEqual(discovered, video.resolve())
