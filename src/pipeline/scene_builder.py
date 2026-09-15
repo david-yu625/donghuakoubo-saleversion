@@ -54,7 +54,11 @@ def build_element(row: dict[str, str], scene_start_ms: int, scene_end_ms: int, s
     source_content = row.get("content", "").strip()
     content = row.get("asset_path", "").strip() if kind == "image" else source_content
     if kind == "image" and (not content or not Path(content).exists()):
-        raise FileNotFoundError(f"Shot {shot_id} 图片素材不存在：{content or source_content}")
+        missing = content or source_content
+        raise FileNotFoundError(
+            f"Shot {shot_id} 图片素材不存在：{missing}。"
+            f"请先运行第06步（生成图片）补齐素材，再执行第07步。"
+        )
     return SceneElement(
         element_id=row.get("element_id", "").strip(),
         element_type=kind,

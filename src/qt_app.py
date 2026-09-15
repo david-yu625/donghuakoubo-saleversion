@@ -122,7 +122,7 @@ from .prepare.cover import (
     resolve_cover_size,
 )
 from .prepare.copywriting import revise_copywriting
-from .prepare.topic_generation import generate_unique_topic, generate_unique_topics
+from .prepare.topic_generation import generate_unique_topics, record_topic
 
 
 WORKFLOW_LANDSCAPE = "\u6a2a\u7248\u6210\u7247\uff08\u6807\u9898+\u5b57\u5e55\uff09"
@@ -131,6 +131,7 @@ WORKFLOW_NATIVE_PORTRAIT = "\u539f\u751f\u7ad6\u7248\u6210\u7247"
 WORKFLOW_COVER = "\u751f\u6210\u4f5c\u54c1\u5c01\u9762"
 WORKFLOW_PUBLISH = "\u53d1\u5e03\u4f5c\u54c1"
 UI_STATE_PATH = OUTPUT_ROOT / "ui_state.json"
+PROJECT_PANEL_COLLAPSED_HEIGHT = 76
 
 
 STYLE_SHEET = """
@@ -141,6 +142,10 @@ QWidget {
     font-size: 13px;
 }
 QMainWindow { background: #0b0d10; }
+QLabel { background: transparent; }
+QLabel#formLabel { color: #aeb6c2; background: transparent; }
+QWidget#panelBody, QWidget#formField { background: transparent; }
+QCheckBox { background: transparent; spacing: 7px; }
 QTabWidget::pane { border: 0; background: #0f1115; }
 QTabBar::tab {
     min-width: 104px; padding: 12px 18px; margin-right: 2px;
@@ -149,10 +154,13 @@ QTabBar::tab {
 QTabBar::tab:selected { color: #ffffff; background: #171a20; border-bottom: 2px solid #4f8cff; }
 QTabBar::tab:hover:!selected { color: #d1d5db; background: #14171c; }
 QFrame#panel { background: #15181e; border: 1px solid #252a33; border-radius: 6px; }
+QFrame#workflowPanel { background: #15181e; border: 1px solid #252a33; border-radius: 6px; }
+QFrame#workflowContent { background: transparent; border: 0; }
 QFrame#stepRow { background: transparent; border-bottom: 1px solid #242932; }
 QLabel#appTitle { color: #ffffff; font-size: 20px; font-weight: 600; }
 QLabel#sectionTitle { color: #f3f4f6; font-size: 14px; font-weight: 600; }
 QLabel#muted { color: #778190; font-size: 11px; background: transparent; }
+QLabel#stageStatus { color: #687384; font-size: 11px; background: transparent; }
 QLabel#stepTitle { color: #f0f2f5; font-weight: 600; }
 QLabel#status {
     color: #9ca3af; background: #242932; border: 1px solid #303641;
@@ -182,6 +190,24 @@ QPushButton#primary:hover { background: #4f8cff; border-color: #4f8cff; }
 QPushButton#primary:disabled {
     color: #5d6571; background: #1b1e24; border-color: #262a31;
 }
+QFrame#stageNavBar { background: transparent; border-bottom: 1px solid #252a33; }
+QPushButton#stageNav {
+    min-height: 42px; padding: 0 14px; text-align: center;
+    color: #aeb6c2; background: transparent; border: 0; border-radius: 4px;
+}
+QPushButton#stageNav:hover { color: #f3f4f6; background: #171a20; }
+QPushButton#stageNav:checked {
+    color: #ffffff; background: #1b2535; border-bottom: 3px solid #4f8cff; font-weight: 600;
+}
+QPushButton#modeSegment {
+    min-height: 32px; padding: 0 14px; color: #9ca3af;
+    background: #15181e; border: 1px solid #303641; border-radius: 4px;
+}
+QPushButton#modeSegment:hover { color: #f3f4f6; background: #1c2027; }
+QPushButton#modeSegment:checked {
+    color: #ffffff; background: #315a9b; border-color: #4f8cff; font-weight: 600;
+}
+QFrame#workflowActions { background: transparent; border-bottom: 1px solid #252a33; }
 QPushButton#describedAction QLabel#describedActionTitle {
     color: #dce1e8; background: transparent; border: none;
 }
@@ -311,8 +337,8 @@ class PipelineWindow(QMainWindow):
     jianying_automation_failed = Signal(str)
     douyin_publish_succeeded = Signal(str)
     douyin_publish_failed = Signal(str)
-    topic_generated = Signal(str)
     batch_topics_generated = Signal(object)
+    topic_generation_progress = Signal(str)
     topic_generation_failed = Signal(str)
     copy_revision_succeeded = Signal(str)
     copy_revision_failed = Signal(str)
@@ -324,7 +350,7 @@ class PipelineWindow(QMainWindow):
         for key in APP_SETTING_KEYS:
             os.environ.pop(key, None)
         self.setWindowTitle("动画口播智能体")
-        self.resize(1040, 680)
+        self.resize(1440, 900)
         self.setMinimumSize(1040, 620)
         self.draft_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.draft_name_is_automatic = True
@@ -356,6 +382,7 @@ class PipelineWindow(QMainWindow):
         self._douyin_last_auto_title = ""
         self._douyin_last_auto_cover = ""
         self._douyin_last_auto_video = ""
+        self._douyin_last_publish_succeeded = False
         self._auto_run_step09 = False
         self._automation_draft_target: tuple[Path, str] | None = None
         self._automation_last_status = "未执行"
@@ -369,6 +396,12 @@ class PipelineWindow(QMainWindow):
         self.workflow_group: QComboBox | None = None
         self.workflow_mode: QComboBox | None = None
         self.workflow_tabs: QTabWidget | None = None
+        self.workflow_stage_buttons: dict[str, QPushButton] = {}
+        self.workflow_stage_status_labels: dict[str, QLabel] = {}
+        self.video_mode_buttons: dict[str, QPushButton] = {}
+        self.video_mode_bar: QWidget | None = None
+        self.video_mode_combo: QComboBox | None = None
+        self.workflow_actions: QFrame | None = None
         self.cover_panel: QFrame | None = None
         self.cover_size_combo: QComboBox | None = None
         self.cover_canvas_label: QLabel | None = None
@@ -377,6 +410,7 @@ class PipelineWindow(QMainWindow):
         self.cover_status_label: QLabel | None = None
         self.cover_view_button: QPushButton | None = None
         self.cover_folder_button: QPushButton | None = None
+        self.cover_generate_button: QPushButton | None = None
         self.publish_panel: QFrame | None = None
         self.publish_status_label: QLabel | None = None
         self.project_panel: QFrame | None = None
@@ -384,7 +418,7 @@ class PipelineWindow(QMainWindow):
         self.project_settings_scroll: QScrollArea | None = None
         self.workflow_splitter: QSplitter | None = None
         self.project_toggle_button: QToolButton | None = None
-        self.project_settings_expanded = True
+        self.project_settings_expanded = False
         self.package_source_video: QLineEdit | None = None
         self.package_project_combo: QComboBox | None = None
         self.landscape_projects: list[LandscapeProject] = []
@@ -395,8 +429,9 @@ class PipelineWindow(QMainWindow):
         self.background_black_checkbox: QCheckBox | None = None
         self.package_project_label: QLabel | None = None
         self.batch_topic_label: QWidget | None = None
-        self.topic_generate_button: QPushButton | None = None
+        self.topic_catalog_button: QPushButton | None = None
         self.batch_topic_generate_button: QPushButton | None = None
+        self.archive_topic_button: QPushButton | None = None
         self.target_duration_label: QLabel | None = None
         self.target_chars_group: QWidget | None = None
         self.context_input: QPlainTextEdit | None = None
@@ -410,8 +445,8 @@ class PipelineWindow(QMainWindow):
         self.jianying_automation_failed.connect(self._on_jianying_automation_failed)
         self.douyin_publish_succeeded.connect(self._on_douyin_publish_succeeded)
         self.douyin_publish_failed.connect(self._on_douyin_publish_failed)
-        self.topic_generated.connect(self._on_topic_generated)
         self.batch_topics_generated.connect(self._on_batch_topics_generated)
+        self.topic_generation_progress.connect(self._on_topic_generation_progress)
         self.topic_generation_failed.connect(self._on_topic_generation_failed)
         self.copy_revision_succeeded.connect(self._on_copy_revision_succeeded)
         self.copy_revision_failed.connect(self._on_copy_revision_failed)
@@ -438,6 +473,8 @@ class PipelineWindow(QMainWindow):
         title.setObjectName("appTitle")
         header.addWidget(title)
         header.addStretch()
+        outer.addLayout(header)
+
         self.stop_button = self._button("停止", QStyle.SP_MediaStop, self.runner.stop, "danger")
         self.batch_button = self._button("批量执行", QStyle.SP_MediaPlay, self.run_batch_pipeline)
         self.continue_button = self._button(
@@ -447,11 +484,6 @@ class PipelineWindow(QMainWindow):
         )
         self.continue_button.setToolTip("使用当前 wenan.txt，跳过第 01 步，重跑第 02～08 步（会重生成图片）")
         self.start_button = self._button("开始执行", QStyle.SP_MediaPlay, self.run_pipeline, "primary")
-        header.addWidget(self.stop_button)
-        header.addWidget(self.batch_button)
-        header.addWidget(self.continue_button)
-        header.addWidget(self.start_button)
-        outer.addLayout(header)
 
         self.workflow_tabs = QTabWidget()
         steps_scroll = QScrollArea()
@@ -483,7 +515,7 @@ class PipelineWindow(QMainWindow):
         self.workflow_tabs.addTab(cover_scroll, "作品封面")
         self.workflow_tabs.addTab(publish_scroll, "发布作品")
         self.workflow_tabs.currentChanged.connect(self._change_workflow_stage)
-        self.workflow_tabs.setMinimumWidth(780)
+        self.workflow_tabs.setMinimumWidth(560)
         self.workflow_tabs.setMinimumHeight(220)
         self.workflow_tabs.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
@@ -498,8 +530,8 @@ class PipelineWindow(QMainWindow):
 
         self.workflow_splitter = QSplitter(Qt.Vertical)
         self.workflow_splitter.addWidget(self.project_settings_scroll)
-        self.workflow_splitter.addWidget(self.workflow_tabs)
-        self.workflow_splitter.setSizes([240, 490])
+        self.workflow_splitter.addWidget(self._build_stage_workspace())
+        self.workflow_splitter.setSizes([PROJECT_PANEL_COLLAPSED_HEIGHT, 686])
         self.workflow_splitter.setStretchFactor(0, 0)
         self.workflow_splitter.setStretchFactor(1, 1)
         self.workflow_splitter.setChildrenCollapsible(False)
@@ -509,8 +541,8 @@ class PipelineWindow(QMainWindow):
         content_splitter = QSplitter(Qt.Horizontal)
         content_splitter.addWidget(self.workflow_splitter)
         content_splitter.addWidget(self._build_log_panel())
-        content_splitter.setSizes([780, 210])
-        content_splitter.setStretchFactor(0, 4)
+        content_splitter.setSizes([1120, 240])
+        content_splitter.setStretchFactor(0, 5)
         content_splitter.setStretchFactor(1, 1)
         content_splitter.setChildrenCollapsible(False)
         content_splitter.setMinimumHeight(0)
@@ -518,104 +550,218 @@ class PipelineWindow(QMainWindow):
         outer.addWidget(content_splitter, 1)
         assert self.workflow_mode is not None
         self.workflow_mode.currentIndexChanged.connect(self._change_workflow_mode)
+        self._set_project_settings_expanded(False)
         self._change_workflow_mode(self.workflow_mode.currentIndex())
         return page
 
+    def _build_stage_workspace(self) -> QWidget:
+        assert self.workflow_tabs is not None
+        workspace = QFrame()
+        workspace.setObjectName("workflowPanel")
+        layout = QVBoxLayout(workspace)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(10)
+
+        stage_nav = QFrame()
+        stage_nav.setObjectName("stageNavBar")
+        stage_layout = QHBoxLayout(stage_nav)
+        stage_layout.setContentsMargins(0, 0, 0, 10)
+        stage_layout.setSpacing(8)
+        stage_layout.addWidget(self._form_label("主题流程", width=68))
+        stage_defs = (
+            "视频制作",
+            "作品资产",
+            "作品发布",
+        )
+        for index, stage in enumerate(stage_defs, start=1):
+            stage_item = QWidget()
+            stage_item.setObjectName("formField")
+            stage_item_layout = QVBoxLayout(stage_item)
+            stage_item_layout.setContentsMargins(0, 0, 0, 0)
+            stage_item_layout.setSpacing(2)
+            button = QPushButton(f"{index}  {stage}")
+            button.clicked.connect(
+                lambda checked=False, value=stage: self._select_workflow_stage(value)
+            )
+            button.setObjectName("stageNav")
+            button.setCheckable(True)
+            self.workflow_stage_buttons[stage] = button
+            stage_item_layout.addWidget(button)
+            status = QLabel("未开始")
+            status.setObjectName("stageStatus")
+            status.setAlignment(Qt.AlignCenter)
+            self.workflow_stage_status_labels[stage] = status
+            stage_item_layout.addWidget(status)
+            stage_layout.addWidget(stage_item, 1)
+        layout.addWidget(stage_nav)
+
+        self.video_mode_bar = QWidget()
+        self.video_mode_bar.setObjectName("formField")
+        mode_layout = QHBoxLayout(self.video_mode_bar)
+        mode_layout.setContentsMargins(0, 0, 0, 0)
+        mode_layout.setSpacing(8)
+        mode_label = self._form_label("视频版本", width=68)
+        mode_layout.addWidget(mode_label)
+        video_modes = (
+            ("横版母片", WORKFLOW_LANDSCAPE),
+            ("横版转竖版", WORKFLOW_PORTRAIT_PACKAGE),
+            ("原生竖版", WORKFLOW_NATIVE_PORTRAIT),
+        )
+        self.video_mode_combo = QComboBox()
+        for label, mode in video_modes:
+            self.video_mode_combo.addItem(label, mode)
+        self.video_mode_combo.setFixedWidth(236)
+        self.video_mode_combo.currentIndexChanged.connect(self._change_video_mode_from_combo)
+        mode_layout.addWidget(self.video_mode_combo)
+
+        actions = QFrame()
+        actions.setObjectName("workflowActions")
+        self.workflow_actions = actions
+        action_layout = QHBoxLayout(actions)
+        action_layout.setContentsMargins(0, 0, 0, 10)
+        action_layout.setSpacing(8)
+        action_layout.addWidget(self.video_mode_bar)
+        action_layout.addStretch()
+        self.stop_button.setText("停止任务")
+        self.stop_button.setToolTip("停止当前任务")
+        self.stop_button.setAccessibleName("停止当前任务")
+        self.stop_button.setFixedWidth(108)
+        self.batch_button.setFixedWidth(110)
+        self.continue_button.setFixedWidth(126)
+        self.start_button.setFixedWidth(116)
+        action_layout.addWidget(self.stop_button)
+        action_layout.addWidget(self.batch_button)
+        action_layout.addWidget(self.continue_button)
+        action_layout.addWidget(self.start_button)
+        layout.addWidget(actions)
+        layout.addWidget(self.workflow_tabs, 1)
+        return workspace
+
     def _build_project_panel(self) -> QFrame:
         self.project_toggle_button = QToolButton()
-        self.project_toggle_button.setIcon(self.style().standardIcon(QStyle.SP_ArrowUp))
-        self.project_toggle_button.setToolTip("收起项目设置")
+        self.project_toggle_button.setArrowType(Qt.DownArrow)
+        self.project_toggle_button.setToolTip("展开主题设置")
         self.project_toggle_button.clicked.connect(self.toggle_project_settings)
-        panel, layout = self._panel("项目设置", self.project_toggle_button)
-        self.project_panel_body = QWidget()
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(12)
-        grid.setVerticalSpacing(10)
+        panel = QFrame()
+        panel.setObjectName("panel")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(16, 14, 16, 16)
+        layout.setSpacing(12)
 
-        workflow_group_label = QLabel("工作流分类")
-        self.project_labels["workflow_group"] = workflow_group_label
-        grid.addWidget(workflow_group_label, 0, 0)
-        self.workflow_group = QComboBox()
-        self.workflow_group.addItems(("视频制作", "作品资产", "作品发布"))
-        self.workflow_group.currentTextChanged.connect(self._change_workflow_group)
-        grid.addWidget(self.workflow_group, 0, 1, 1, 3)
-
-        workflow_label = QLabel("具体流程")
-        self.project_labels["workflow_mode"] = workflow_label
-        grid.addWidget(workflow_label, 0, 4)
-        self.workflow_mode = QComboBox()
-        grid.addWidget(self.workflow_mode, 0, 5, 1, 4)
-        self._change_workflow_group("视频制作")
-
-        direction_label = QLabel("选题方向")
-        self.project_labels["topic_direction"] = direction_label
-        grid.addWidget(direction_label, 1, 0)
-        self.inputs["topic_direction"] = QLineEdit()
-        self.inputs["topic_direction"].setPlaceholderText("例如：计算机操作系统、数据库、人工智能、大模型")
-        grid.addWidget(self.inputs["topic_direction"], 1, 1, 1, 4)
-        self.topic_generate_button = self._button(
-            "生成新主题",
-            QStyle.SP_FileDialogContentsView,
-            self.generate_new_topic,
+        topic_row = QHBoxLayout()
+        topic_row.setSpacing(12)
+        topic_label = self._form_label("主题")
+        self.project_labels["topic"] = topic_label
+        topic_row.addWidget(topic_label)
+        self.inputs["topic"] = QLineEdit("什么是知识传递")
+        self.inputs["topic"].setMinimumWidth(320)
+        topic_row.addWidget(self.inputs["topic"], 1)
+        self.topic_catalog_button = self._button(
+            "查看主题",
+            QStyle.SP_FileDialogDetailedView,
+            self.view_topic_catalog,
         )
-        self.topic_generate_button.setToolTip("结合选题方向和上下文，筛选一个实用且未重复的具体主题")
-        grid.addWidget(self.topic_generate_button, 1, 5)
+        self.topic_catalog_button.setToolTip("读取并查看 data/主题清单.md 的最新内容")
+        self.topic_catalog_button.setFixedWidth(110)
+        topic_row.addWidget(self.topic_catalog_button)
+        self.archive_topic_button = self._button(
+            "归档主题",
+            QStyle.SP_DialogSaveButton,
+            self.archive_current_topic,
+        )
+        self.archive_topic_button.setToolTip("将当前主题标记为已制作并放入历史主题")
+        self.archive_topic_button.setFixedWidth(150)
+        topic_row.addWidget(self.archive_topic_button)
+        topic_row.addWidget(self.project_toggle_button)
+        layout.addLayout(topic_row)
+
+        # Keep the existing mode value as internal state.  The visible controls
+        # are the stage navigation and video-mode segmented buttons below.
+        self.workflow_mode = QComboBox(panel)
+        self.workflow_mode.addItems(
+            (
+                WORKFLOW_LANDSCAPE,
+                WORKFLOW_PORTRAIT_PACKAGE,
+                WORKFLOW_NATIVE_PORTRAIT,
+                WORKFLOW_COVER,
+                WORKFLOW_PUBLISH,
+            )
+        )
+        self.workflow_mode.hide()
+
+        self.project_panel_body = QWidget()
+        self.project_panel_body.setObjectName("panelBody")
+        self.project_panel_body.setVisible(self.project_settings_expanded)
+        form = QFormLayout(self.project_panel_body)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setHorizontalSpacing(12)
+        form.setVerticalSpacing(10)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+
+        direction_label = self._form_label("选题方向")
+        self.project_labels["topic_direction"] = direction_label
+        self.inputs["topic_direction"] = QLineEdit()
+        self.inputs["topic_direction"].setPlaceholderText(
+            "可选，例如：计算机操作系统、数据库、人工智能、大模型"
+        )
         self.batch_topic_generate_button = self._button(
             "批量生成主题",
             QStyle.SP_FileDialogListView,
             self.generate_batch_topics,
         )
-        self.batch_topic_generate_button.setToolTip("结合选题方向和上下文，生成一组互不重复的具体主题")
-        grid.addWidget(self.batch_topic_generate_button, 1, 6, 1, 2)
+        self.batch_topic_generate_button.setToolTip(
+            "生成一组互不重复的具体主题；选题方向可留空"
+        )
+        self.batch_topic_generate_button.setFixedWidth(150)
+        direction_row = QWidget()
+        direction_row.setObjectName("formField")
+        direction_layout = QHBoxLayout(direction_row)
+        direction_layout.setContentsMargins(0, 0, 0, 0)
+        direction_layout.setSpacing(12)
+        direction_layout.addWidget(self.inputs["topic_direction"], 1)
+        direction_layout.addWidget(self.batch_topic_generate_button)
+        toggle_column_spacer = QWidget()
+        toggle_column_spacer.setObjectName("formField")
+        toggle_column_spacer.setFixedWidth(self.project_toggle_button.sizeHint().width())
+        direction_layout.addWidget(toggle_column_spacer)
+        form.addRow(direction_label, direction_row)
 
-        topic_label = QLabel("主题")
-        self.project_labels["topic"] = topic_label
-        grid.addWidget(topic_label, 2, 0)
-        self.inputs["topic"] = QLineEdit("什么是知识传递")
-        grid.addWidget(self.inputs["topic"], 2, 1, 1, 4)
-
-        target_chars_label = QLabel("最长字数")
-        self.project_labels["target_chars"] = target_chars_label
-        self.inputs["target_chars"] = QLineEdit("500")
-        self.inputs["target_chars"].setFixedWidth(72)
-        target_chars_group = QWidget()
-        self.target_chars_group = target_chars_group
-        target_chars_layout = QHBoxLayout(target_chars_group)
-        target_chars_layout.setContentsMargins(0, 0, 0, 0)
-        target_chars_layout.setSpacing(8)
-        target_chars_layout.addWidget(target_chars_label)
-        target_chars_layout.addWidget(self.inputs["target_chars"])
-
-        context_label = QLabel("上下文 / 行文思路")
+        context_label = self._form_label("上下文 / 行文思路", top=True)
         self.project_labels["context"] = context_label
-        grid.addWidget(context_label, 3, 0, Qt.AlignTop)
         self.context_input = QPlainTextEdit()
         self.context_input.setObjectName("contextInput")
-        self.context_input.setFixedHeight(80)
+        self.context_input.setFixedHeight(68)
         self.context_input.setPlaceholderText(
             "例如：‘养龙虾’指用人工智能生成养殖方案，不是现实养殖；重点讲清概念区别。"
         )
         self.context_input.setToolTip("补充主题背景、关键词含义、受众和行文重点，帮助模型避免跑题")
-        grid.addWidget(self.context_input, 3, 1, 1, 8)
+        form.addRow(context_label, self.context_input)
 
-        settings = (
-            ("草稿名", "draft_name", f"什么是知识传递_{self.draft_timestamp}", 4, 0, 1, 7),
-        )
-        for label, key, value, row, label_column, field_column, field_span in settings:
-            field_label = QLabel(label)
-            self.project_labels[key] = field_label
-            grid.addWidget(field_label, row, label_column)
-            edit = QLineEdit(value)
-            self.inputs[key] = edit
-            grid.addWidget(edit, row, field_column, 1, field_span)
+        target_chars_label = self._form_label("最长字数")
+        self.project_labels["target_chars"] = target_chars_label
+        self.inputs["target_chars"] = QLineEdit("700")
+        self.inputs["target_chars"].setFixedWidth(72)
+        target_chars_group = QWidget()
+        target_chars_group.setObjectName("formField")
+        self.target_chars_group = target_chars_group
+        target_chars_layout = QHBoxLayout(target_chars_group)
+        target_chars_layout.setContentsMargins(0, 0, 0, 0)
+        target_chars_layout.setSpacing(10)
+        target_chars_layout.addWidget(self.inputs["target_chars"])
         self.target_duration_label = QLabel()
         self.target_duration_label.setObjectName("muted")
         self.target_duration_label.setWordWrap(False)
         self.target_duration_label.setMinimumWidth(180)
         self.target_duration_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         target_chars_layout.addWidget(self.target_duration_label, 1, Qt.AlignLeft | Qt.AlignVCenter)
-        grid.addWidget(target_chars_group, 2, 5, 1, 4)
+        form.addRow(target_chars_label, target_chars_group)
+
+        draft_label = self._form_label("草稿名")
+        self.project_labels["draft_name"] = draft_label
+        self.inputs["draft_name"] = QLineEdit(f"什么是知识传递_{self.draft_timestamp}")
+        form.addRow(draft_label, self.inputs["draft_name"])
+
         self.inputs["target_chars"].textChanged.connect(self._update_duration_estimate)
         self._update_duration_estimate(self.inputs["target_chars"].text())
 
@@ -623,74 +769,115 @@ class PipelineWindow(QMainWindow):
         self.inputs["topic"].textChanged.connect(self._update_package_project_label)
         self.inputs["topic"].textChanged.connect(self._update_cover_prompt_preview)
         self.inputs["topic"].textChanged.connect(self._update_publish_title)
+        self.inputs["topic"].textChanged.connect(self._on_workspace_topic_changed)
         self.context_input.textChanged.connect(self._update_cover_prompt_preview)
         self.inputs["draft_name"].textEdited.connect(self._mark_draft_name_custom)
-        grid.addWidget(QLabel("批量主题"), 5, 0)
+        batch_label = self._form_label("批量主题", top=True)
         self.batch_topics = QPlainTextEdit()
         self.batch_topics.setObjectName("batchTopics")
-        self.batch_topics.setFixedHeight(64)
+        self.batch_topics.setFixedHeight(54)
         self.batch_topics.setPlaceholderText("每行输入一个主题")
         self.batch_topics.setToolTip("批量执行时按行读取主题，空行和重复主题会被忽略")
         self.batch_topics.textChanged.connect(self._update_batch_topic_count)
-        grid.addWidget(self.batch_topics, 5, 1, 1, 7)
         self.batch_status_label = QLabel("0 个主题")
         self.batch_status_label.setObjectName("muted")
         self.batch_status_label.setAlignment(Qt.AlignCenter)
-        grid.addWidget(self.batch_status_label, 5, 8)
-        self.batch_topic_label = grid.itemAtPosition(5, 0).widget()
-        grid.setColumnStretch(1, 2)
-        grid.setColumnStretch(3, 1)
-        grid.setColumnStretch(5, 0)
-        grid.setColumnStretch(8, 2)
-        self.project_panel_body.setLayout(grid)
+        self.batch_status_label.setFixedWidth(110)
+        batch_row = QWidget()
+        batch_row.setObjectName("formField")
+        batch_layout = QHBoxLayout(batch_row)
+        batch_layout.setContentsMargins(0, 0, 0, 0)
+        batch_layout.setSpacing(8)
+        batch_layout.addWidget(self.batch_topics, 1)
+        batch_layout.addWidget(self.batch_status_label)
+        form.addRow(batch_label, batch_row)
+        self.batch_topic_label = batch_label
         layout.addWidget(self.project_panel_body)
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         return panel
 
     def _change_workflow_group(self, group: str) -> None:
-        """Populate the second selector with modes belonging to the chosen group."""
+        """Compatibility wrapper for switching one of the three theme stages."""
+        self._select_workflow_stage(group)
+
+    def _select_workflow_stage(self, stage: str) -> None:
         if self.workflow_mode is None:
             return
-        modes = {
-            "视频制作": (WORKFLOW_LANDSCAPE, WORKFLOW_PORTRAIT_PACKAGE, WORKFLOW_NATIVE_PORTRAIT),
-            "作品资产": (WORKFLOW_COVER,),
-            "作品发布": (WORKFLOW_PUBLISH,),
-        }.get(group, (WORKFLOW_LANDSCAPE,))
-        previous = self.workflow_mode.blockSignals(True)
-        self.workflow_mode.clear()
-        self.workflow_mode.addItems(modes)
-        self.workflow_mode.setCurrentIndex(0)
-        self.workflow_mode.blockSignals(previous)
-        if self.workflow_tabs is not None and hasattr(self, "batch_topics"):
+        video_modes = (WORKFLOW_LANDSCAPE, WORKFLOW_PORTRAIT_PACKAGE, WORKFLOW_NATIVE_PORTRAIT)
+        current = self.workflow_mode.currentText()
+        if stage == "作品资产":
+            mode = WORKFLOW_COVER
+        elif stage == "作品发布":
+            mode = WORKFLOW_PUBLISH
+        else:
+            mode = current if current in video_modes else WORKFLOW_LANDSCAPE
+        if stage in {"作品资产", "作品发布"} and self.project_settings_expanded:
+            self._set_project_settings_expanded(False)
+        if current == mode:
             self._change_workflow_mode(self.workflow_mode.currentIndex())
+        else:
+            self.workflow_mode.setCurrentText(mode)
 
-    def generate_new_topic(self) -> None:
-        if not self._can_start_topic_generation():
+    def _select_video_mode(self, mode: str) -> None:
+        if self.workflow_mode is None:
             return
-        direction = self.inputs["topic_direction"].text().strip()
-        context = self.context_input.toPlainText().strip() if self.context_input is not None else ""
-        if not direction:
-            QMessageBox.information(self, "缺少选题方向", "请先填写选题方向。")
+        if mode not in (WORKFLOW_LANDSCAPE, WORKFLOW_PORTRAIT_PACKAGE, WORKFLOW_NATIVE_PORTRAIT):
             return
-        self._set_topic_generation_enabled(False)
+        if self.workflow_mode.currentText() == mode:
+            self._change_workflow_mode(self.workflow_mode.currentIndex())
+        else:
+            self.workflow_mode.setCurrentText(mode)
 
-        def worker() -> None:
-            try:
-                self.topic_generated.emit(generate_unique_topic(direction=direction, context=context))
-            except Exception as exc:
-                self.topic_generation_failed.emit(str(exc))
+    def _change_video_mode_from_combo(self, index: int) -> None:
+        if self.video_mode_combo is None:
+            return
+        mode = self.video_mode_combo.itemData(index)
+        if isinstance(mode, str):
+            self._select_video_mode(mode)
 
-        self._topic_generation_thread = threading.Thread(target=worker, daemon=True)
-        self._topic_generation_thread.start()
+    def _sync_workflow_navigation(self, mode: str) -> None:
+        video = mode in (WORKFLOW_LANDSCAPE, WORKFLOW_PORTRAIT_PACKAGE, WORKFLOW_NATIVE_PORTRAIT)
+        selected_stage = "视频制作" if video else ("作品资产" if mode == WORKFLOW_COVER else "作品发布")
+        for stage, button in self.workflow_stage_buttons.items():
+            button.setChecked(stage == selected_stage)
+        for value, button in self.video_mode_buttons.items():
+            button.setChecked(value == mode)
+        if self.video_mode_combo is not None:
+            combo_index = self.video_mode_combo.findData(mode)
+            if combo_index >= 0 and combo_index != self.video_mode_combo.currentIndex():
+                self.video_mode_combo.blockSignals(True)
+                self.video_mode_combo.setCurrentIndex(combo_index)
+                self.video_mode_combo.blockSignals(False)
+        if self.video_mode_bar is not None:
+            self.video_mode_bar.setVisible(video)
+
+    def view_topic_catalog(self) -> None:
+        """Display the latest durable Markdown topic catalog."""
+        catalog_path = PROJECT_ROOT / "data" / "主题清单.md"
+        try:
+            content = catalog_path.read_text(encoding="utf-8-sig")
+        except OSError as exc:
+            QMessageBox.warning(self, "读取主题失败", f"无法读取主题清单：\n{catalog_path}\n\n{exc}")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("查看主题清单")
+        dialog.resize(780, 620)
+        layout = QVBoxLayout(dialog)
+        editor = QPlainTextEdit(content)
+        editor.setReadOnly(True)
+        editor.setToolTip("此窗口只读，主题分类请直接编辑 data/主题清单.md")
+        layout.addWidget(editor)
+        close_button = QPushButton("关闭")
+        close_button.clicked.connect(dialog.accept)
+        layout.addWidget(close_button, 0, Qt.AlignRight)
+        dialog.exec()
 
     def generate_batch_topics(self) -> None:
         if not self._can_start_topic_generation():
             return
         direction = self.inputs["topic_direction"].text().strip()
+        current_topic = self.inputs["topic"].text().strip()
         context = self.context_input.toPlainText().strip() if self.context_input is not None else ""
-        if not direction:
-            QMessageBox.information(self, "缺少选题方向", "请先填写选题方向。")
-            return
         count, accepted = QInputDialog.getInt(
             self,
             "批量生成主题",
@@ -703,10 +890,19 @@ class PipelineWindow(QMainWindow):
         if not accepted:
             return
         self._set_topic_generation_enabled(False)
+        self.log.appendPlainText(f"批量生成主题开始：计划生成 {count} 个主题")
 
         def worker() -> None:
             try:
-                self.batch_topics_generated.emit(generate_unique_topics(count, direction=direction, context=context))
+                self.batch_topics_generated.emit(
+                    generate_unique_topics(
+                        count,
+                        direction=direction,
+                        context=context,
+                        current_topic=current_topic,
+                        progress_callback=self.topic_generation_progress.emit,
+                    )
+                )
             except Exception as exc:
                 self.topic_generation_failed.emit(str(exc))
 
@@ -720,25 +916,35 @@ class PipelineWindow(QMainWindow):
         return not (self._topic_generation_thread is not None and self._topic_generation_thread.is_alive())
 
     def _set_topic_generation_enabled(self, enabled: bool) -> None:
-        if self.topic_generate_button is not None:
-            self.topic_generate_button.setEnabled(enabled)
         if self.batch_topic_generate_button is not None:
             self.batch_topic_generate_button.setEnabled(enabled)
 
-    def _on_topic_generated(self, topic: str) -> None:
-        self._set_topic_generation_enabled(True)
-        self.inputs["topic"].setText(topic)
-        self.log.appendPlainText(f"已生成新主题：{topic}")
+    def archive_current_topic(self) -> None:
+        """Mark the current topic as completed in the local history."""
+        topic = self.inputs["topic"].text().strip()
+        if not topic:
+            QMessageBox.information(self, "缺少主题", "请先填写当前主题。")
+            return
+        try:
+            record_topic(topic, status="used")
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "归档失败", str(exc))
+            return
+        self.log.appendPlainText(f"已归档当前主题：{topic}")
+        QMessageBox.information(self, "归档成功", "当前主题已放入历史主题，后续生成会避开相似选题。")
 
     def _on_batch_topics_generated(self, topics: list[str]) -> None:
         self._set_topic_generation_enabled(True)
-        existing = parse_batch_topics(self.batch_topics.toPlainText())
-        merged = parse_batch_topics("\n".join([*existing, *topics]))
-        self.batch_topics.setPlainText("\n".join(merged))
-        self.log.appendPlainText(f"已批量生成 {len(topics)} 个新主题")
+        self.log.appendPlainText(
+            f"批量生成主题完成：新增 {len(topics)} 个主题，已写入主题清单的待评估主题"
+        )
+
+    def _on_topic_generation_progress(self, message: str) -> None:
+        self.log.appendPlainText(message)
 
     def _on_topic_generation_failed(self, message: str) -> None:
         self._set_topic_generation_enabled(True)
+        self.log.appendPlainText(f"批量生成主题失败：{message}")
         QMessageBox.warning(self, "主题生成失败", message)
 
     def _update_automatic_draft_name(self, topic: str) -> None:
@@ -786,43 +992,66 @@ class PipelineWindow(QMainWindow):
 
     def _build_portrait_package_panel(self) -> QFrame:
         panel, layout = self._panel("\u7ad6\u5c4f\u5305\u88c5")
-        form = QGridLayout()
+        panel.setObjectName("workflowContent")
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
         form.setHorizontalSpacing(12)
-        form.setVerticalSpacing(12)
+        form.setVerticalSpacing(10)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
-        form.addWidget(QLabel("\u6a2a\u7248\u9879\u76ee"), 0, 0)
         self.package_project_combo = QComboBox()
         self.package_project_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.package_project_combo.setMinimumContentsLength(24)
-        form.addWidget(self.package_project_combo, 0, 1)
         refresh_button = self._button(
             "\u5237\u65b0",
             QStyle.SP_BrowserReload,
             self.refresh_landscape_projects,
         )
         refresh_button.setToolTip("\u91cd\u65b0\u626b\u63cf output \u4e2d\u53ef\u7528\u7684\u6a2a\u7248\u9879\u76ee")
-        form.addWidget(refresh_button, 0, 2)
+        refresh_button.setFixedWidth(82)
+        project_row = QWidget()
+        project_row.setObjectName("formField")
+        project_layout = QHBoxLayout(project_row)
+        project_layout.setContentsMargins(0, 0, 0, 0)
+        project_layout.setSpacing(8)
+        project_layout.addWidget(self.package_project_combo, 1)
+        project_layout.addWidget(refresh_button)
+        form.addRow(self._form_label("\u6a2a\u7248\u9879\u76ee", width=92), project_row)
 
-        form.addWidget(QLabel("\u6a2a\u7248\u6210\u7247"), 1, 0)
         self.package_source_video = QLineEdit()
         self.package_source_video.setPlaceholderText(
             "\u9009\u62e9\u5df2\u4ece\u526a\u6620\u5bfc\u51fa\u7684 1920 x 1080 MP4"
         )
-        form.addWidget(self.package_source_video, 1, 1)
-        form.addWidget(self._button(
+        source_button = self._button(
             "\u9009\u62e9",
             QStyle.SP_DirOpenIcon,
             self.choose_package_source_video,
-        ), 1, 2)
+        )
+        source_button.setFixedWidth(82)
+        source_row = QWidget()
+        source_row.setObjectName("formField")
+        source_layout = QHBoxLayout(source_row)
+        source_layout.setContentsMargins(0, 0, 0, 0)
+        source_layout.setSpacing(8)
+        source_layout.addWidget(self.package_source_video, 1)
+        source_layout.addWidget(source_button)
+        form.addRow(self._form_label("\u6a2a\u7248\u6210\u7247", width=92), source_row)
 
-        form.addWidget(QLabel("\u9879\u76ee\u76ee\u5f55"), 2, 0)
         self.package_project_label = QLabel()
         self.package_project_label.setObjectName("muted")
         self.package_project_label.setWordWrap(True)
-        form.addWidget(self.package_project_label, 2, 1, 1, 2)
+        form.addRow(
+            self._form_label("\u9879\u76ee\u76ee\u5f55", width=92, top=True),
+            self.package_project_label,
+        )
 
-        form.addWidget(QLabel("\u5305\u88c5\u5185\u5bb9"), 3, 0)
+        option_widget = QWidget()
+        option_widget.setObjectName("formField")
         option_row = QHBoxLayout()
+        option_widget.setLayout(option_row)
+        option_row.setContentsMargins(0, 0, 0, 0)
+        option_row.setSpacing(18)
         self.package_title_checkbox = QCheckBox("\u9876\u90e8\u6807\u9898")
         self.package_title_checkbox.setChecked(True)
         self.package_subtitle_checkbox = QCheckBox("\u5e95\u90e8\u5b57\u5e55")
@@ -833,8 +1062,7 @@ class PipelineWindow(QMainWindow):
         option_row.addWidget(self.package_subtitle_checkbox)
         option_row.addWidget(self.package_black_background_checkbox)
         option_row.addStretch()
-        form.addLayout(option_row, 3, 1, 1, 2)
-        form.setColumnStretch(1, 1)
+        form.addRow(self._form_label("\u5305\u88c5\u5185\u5bb9", width=92), option_widget)
         self.package_project_combo.currentIndexChanged.connect(self._on_package_project_changed)
         self.package_source_video.editingFinished.connect(self._remember_package_source_video)
         layout.addLayout(form)
@@ -843,12 +1071,22 @@ class PipelineWindow(QMainWindow):
         return panel
 
     def _build_cover_panel(self) -> QFrame:
-        panel, layout = self._panel("作品封面")
-        form = QGridLayout()
+        self.cover_generate_button = self._button(
+            "生成封面图",
+            QStyle.SP_MediaPlay,
+            self.run_pipeline,
+            "primary",
+        )
+        self.cover_generate_button.setFixedWidth(132)
+        panel, layout = self._panel("作品封面", self.cover_generate_button)
+        panel.setObjectName("workflowContent")
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(10)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
-        form.addWidget(QLabel("画布尺寸"), 0, 0)
         self.cover_size_combo = QComboBox()
         for key, label, _width, _height, _ratio, _orientation in COVER_SIZE_OPTIONS:
             self.cover_size_combo.addItem(label, key)
@@ -856,48 +1094,59 @@ class PipelineWindow(QMainWindow):
             max(0, self.cover_size_combo.findData(DEFAULT_COVER_SIZE_KEY))
         )
         self.cover_size_combo.currentIndexChanged.connect(self._update_cover_prompt_preview)
-        form.addWidget(self.cover_size_combo, 0, 1, 1, 2)
+        self.cover_size_combo.setMaximumWidth(320)
+        form.addRow(self._form_label("画布尺寸", width=92), self.cover_size_combo)
 
-        form.addWidget(QLabel("画布"), 1, 0)
         self.cover_canvas_label = QLabel()
         self.cover_canvas_label.setObjectName("muted")
-        form.addWidget(self.cover_canvas_label, 1, 1, 1, 2)
+        form.addRow(self._form_label("画布", width=92), self.cover_canvas_label)
 
-        form.addWidget(QLabel("封面提示词"), 2, 0, Qt.AlignTop)
         self.cover_prompt_preview = QPlainTextEdit()
         self.cover_prompt_preview.setReadOnly(True)
         self.cover_prompt_preview.setFixedHeight(180)
         self.cover_prompt_preview.setPlaceholderText("填写主题后，这里会显示封面生成提示词。")
-        form.addWidget(self.cover_prompt_preview, 2, 1, 1, 2)
+        form.addRow(self._form_label("封面提示词", width=92, top=True), self.cover_prompt_preview)
 
-        form.addWidget(QLabel("输出文件"), 3, 0)
         self.cover_output_label = QLabel()
         self.cover_output_label.setObjectName("muted")
         self.cover_output_label.setWordWrap(True)
-        form.addWidget(self.cover_output_label, 3, 1)
         self.cover_status_label = QLabel("未生成")
         self.cover_status_label.setObjectName("status")
         self.cover_status_label.setAlignment(Qt.AlignCenter)
-        form.addWidget(self.cover_status_label, 3, 2)
+        self.cover_status_label.setFixedWidth(132)
+        output_row = QWidget()
+        output_row.setObjectName("formField")
+        output_layout = QHBoxLayout(output_row)
+        output_layout.setContentsMargins(0, 0, 0, 0)
+        output_layout.setSpacing(12)
+        output_layout.addWidget(self.cover_output_label, 1)
+        output_layout.addWidget(self.cover_status_label)
+        form.addRow(self._form_label("输出文件", width=92, top=True), output_row)
+
         self.cover_folder_button = self._button(
             "打开文件夹",
             QStyle.SP_DirOpenIcon,
             self.open_cover_folder,
         )
-        form.addWidget(self.cover_folder_button, 4, 1)
+        self.cover_folder_button.setFixedWidth(132)
         self.cover_view_button = self._button(
             "查看封面",
             QStyle.SP_FileDialogDetailedView,
             self.show_cover_artifact,
         )
         self.cover_view_button.setEnabled(False)
-        form.addWidget(self.cover_view_button, 4, 2)
+        self.cover_view_button.setFixedWidth(132)
+        cover_actions = QWidget()
+        cover_actions.setObjectName("formField")
+        cover_actions_layout = QHBoxLayout(cover_actions)
+        cover_actions_layout.setContentsMargins(0, 0, 0, 0)
+        cover_actions_layout.setSpacing(8)
+        cover_actions_layout.addStretch()
+        cover_actions_layout.addWidget(self.cover_folder_button)
+        cover_actions_layout.addWidget(self.cover_view_button)
+        form.addRow(self._form_label("", width=92), cover_actions)
 
-        note = QLabel("封面独立于 01～09 主流程，只生成 PNG，不生成配音、布局或剪映草稿。")
-        note.setObjectName("muted")
-        note.setWordWrap(True)
         layout.addLayout(form)
-        layout.addWidget(note)
         layout.addStretch()
         self._update_cover_prompt_preview()
         self.cover_panel = panel
@@ -905,60 +1154,81 @@ class PipelineWindow(QMainWindow):
 
     def _build_publish_panel(self) -> QFrame:
         panel, layout = self._panel("发布作品")
-        form = QGridLayout()
+        panel.setObjectName("workflowContent")
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
         form.setHorizontalSpacing(12)
         form.setVerticalSpacing(10)
+        form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
-        form.addWidget(QLabel("视频文件"), 0, 0)
         self.douyin_video_input = QLineEdit()
         self.douyin_video_input.setPlaceholderText("自动读取当前主题最新导出视频，也可以手动选择")
-        form.addWidget(self.douyin_video_input, 0, 1)
-        form.addWidget(self._button("选择", QStyle.SP_DirOpenIcon, self.choose_douyin_video), 0, 2)
+        video_button = self._button("选择", QStyle.SP_DirOpenIcon, self.choose_douyin_video)
+        video_button.setFixedWidth(82)
+        video_row = QWidget()
+        video_row.setObjectName("formField")
+        video_layout = QHBoxLayout(video_row)
+        video_layout.setContentsMargins(0, 0, 0, 0)
+        video_layout.setSpacing(8)
+        video_layout.addWidget(self.douyin_video_input, 1)
+        video_layout.addWidget(video_button)
+        form.addRow(self._form_label("视频文件", width=92), video_row)
 
-        form.addWidget(QLabel("封面图片"), 1, 0)
         self.douyin_cover_input = QLineEdit()
         self.douyin_cover_input.setPlaceholderText("自动读取当前主题生成的封面图片")
-        form.addWidget(self.douyin_cover_input, 1, 1)
-        form.addWidget(self._button("选择", QStyle.SP_DirOpenIcon, self.choose_douyin_cover), 1, 2)
+        cover_button = self._button("选择", QStyle.SP_DirOpenIcon, self.choose_douyin_cover)
+        cover_button.setFixedWidth(82)
+        cover_row = QWidget()
+        cover_row.setObjectName("formField")
+        cover_layout = QHBoxLayout(cover_row)
+        cover_layout.setContentsMargins(0, 0, 0, 0)
+        cover_layout.setSpacing(8)
+        cover_layout.addWidget(self.douyin_cover_input, 1)
+        cover_layout.addWidget(cover_button)
+        form.addRow(self._form_label("封面图片", width=92), cover_row)
 
-        form.addWidget(QLabel("作品标题"), 2, 0)
         self.douyin_title_input = QLineEdit()
         self.douyin_title_input.setPlaceholderText("抖音作品标题，最多 55 个字符")
-        form.addWidget(self.douyin_title_input, 2, 1, 1, 2)
+        form.addRow(self._form_label("作品标题", width=92), self.douyin_title_input)
 
-        form.addWidget(QLabel("话题"), 3, 0)
         self.douyin_topics_input = QLineEdit()
         self.douyin_topics_input.setPlaceholderText("多个话题用空格或逗号分隔，例如：人工智能 计算机知识")
-        form.addWidget(self.douyin_topics_input, 3, 1, 1, 2)
+        form.addRow(self._form_label("话题", width=92), self.douyin_topics_input)
 
-        form.addWidget(QLabel("作品描述"), 4, 0, Qt.AlignTop)
         self.douyin_description_input = QPlainTextEdit()
+        self.douyin_description_input.setObjectName("contextInput")
         self.douyin_description_input.setFixedHeight(72)
         self.douyin_description_input.setPlaceholderText("可选：作品简介。发布时会自动追加上面的 #话题")
-        form.addWidget(self.douyin_description_input, 4, 1, 1, 2)
-        form.setColumnStretch(1, 1)
-        layout.addLayout(form)
+        form.addRow(self._form_label("作品描述", width=92, top=True), self.douyin_description_input)
 
-        actions = QHBoxLayout()
-        self.douyin_open_button = self._button("打开抖音发布页", QStyle.SP_DirOpenIcon, self.open_douyin_page)
-        self.douyin_open_button.setToolTip("使用专用浏览器配置打开抖音创作中心，首次使用时在这里登录")
-        scan_button = self._button("重新扫描素材", QStyle.SP_BrowserReload, self.scan_publish_assets)
+        self.publish_status_label = QLabel("未扫描")
+        self.publish_status_label.setObjectName("muted")
+        form.addRow(self._form_label("素材状态", width=92), self.publish_status_label)
+
+        actions_widget = QWidget()
+        actions_widget.setObjectName("formField")
+        actions = QHBoxLayout(actions_widget)
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(8)
+        self.douyin_open_button = self._button("登录/检查抖音", QStyle.SP_DirOpenIcon, self.open_douyin_page)
+        self.douyin_open_button.setFixedWidth(136)
+        self.douyin_open_button.setToolTip("首次使用时打开专用浏览器并登录；登录后发布按钮会复用此会话")
+        scan_button = self._button("扫描当前主题素材", QStyle.SP_BrowserReload, self.scan_publish_assets)
+        scan_button.setFixedWidth(166)
         self.douyin_publish_button = self._button(
             "发布到抖音", QStyle.SP_ArrowForward, self.publish_current_video_to_douyin, "primary"
         )
-        self.publish_status_label = QLabel("未扫描")
-        self.publish_status_label.setObjectName("muted")
+        self.douyin_publish_button.setFixedWidth(126)
+        self.douyin_publish_button.setToolTip(
+            "复用已登录的专用浏览器，自动上传视频和封面、填写作品信息并直接发布"
+        )
+        actions.addStretch()
         actions.addWidget(self.douyin_open_button)
         actions.addWidget(scan_button)
         actions.addWidget(self.douyin_publish_button)
-        actions.addWidget(self.publish_status_label)
-        actions.addStretch()
-        layout.addLayout(actions)
-
-        note = QLabel("发布会在专用浏览器中完成，首次使用需要登录抖音创作中心。程序不会读取或保存现有浏览器账号。")
-        note.setObjectName("muted")
-        note.setWordWrap(True)
-        layout.addWidget(note)
+        form.addRow(self._form_label("发布操作", width=92), actions_widget)
+        layout.addLayout(form)
         layout.addStretch()
         self.publish_panel = panel
         QTimer.singleShot(0, self.scan_publish_assets)
@@ -966,6 +1236,7 @@ class PipelineWindow(QMainWindow):
 
     def _build_steps_panel(self) -> QFrame:
         panel, layout = self._panel("生产流程")
+        panel.setObjectName("workflowContent")
         panel.setMinimumHeight(500)
         layout.setSpacing(0)
         for key, title, _, action, view_action in UI_STEP_DEFS:
@@ -1268,14 +1539,20 @@ class PipelineWindow(QMainWindow):
         if self.project_panel_body is not None:
             self.project_panel_body.setVisible(expanded)
         if self.project_toggle_button is not None:
-            icon = QStyle.SP_ArrowUp if expanded else QStyle.SP_ArrowDown
-            self.project_toggle_button.setIcon(self.style().standardIcon(icon))
-            self.project_toggle_button.setToolTip("收起项目设置" if expanded else "展开项目设置")
+            self.project_toggle_button.setArrowType(Qt.UpArrow if expanded else Qt.DownArrow)
+            self.project_toggle_button.setToolTip("收起主题设置" if expanded else "展开主题设置")
         if self.project_settings_scroll is None or self.workflow_splitter is None:
             return
-        self.project_settings_scroll.setMaximumHeight(16777215 if expanded else 72)
+        self.project_settings_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded if expanded else Qt.ScrollBarAlwaysOff
+        )
+        self.project_settings_scroll.setMaximumHeight(
+            16777215 if expanded else PROJECT_PANEL_COLLAPSED_HEIGHT
+        )
         self.project_settings_scroll.updateGeometry()
-        self.project_settings_scroll.setMinimumHeight(150 if expanded else 72)
+        self.project_settings_scroll.setMinimumHeight(
+            150 if expanded else PROJECT_PANEL_COLLAPSED_HEIGHT
+        )
         QTimer.singleShot(0, self._rebalance_workflow_splitter)
 
     def _rebalance_workflow_splitter(self) -> None:
@@ -1284,9 +1561,9 @@ class PipelineWindow(QMainWindow):
         total = max(320, self.workflow_splitter.height())
         if self.project_settings_expanded:
             natural_height = self.project_panel.sizeHint().height() if self.project_panel is not None else 300
-            settings_height = min(330, max(150, min(natural_height, total // 2)))
+            settings_height = min(390, max(150, min(natural_height, total // 2)))
         else:
-            settings_height = 72
+            settings_height = PROJECT_PANEL_COLLAPSED_HEIGHT
         self.workflow_splitter.setSizes([settings_height, max(240, total - settings_height)])
 
     def _focus_workflow_view(self) -> None:
@@ -1300,6 +1577,16 @@ class PipelineWindow(QMainWindow):
         if name:
             button.setObjectName(name)
         return button
+
+    def _form_label(self, text: str, *, width: int = 116, top: bool = False) -> QLabel:
+        label = QLabel(text)
+        label.setObjectName("formLabel")
+        label.setFixedWidth(width)
+        alignment = Qt.AlignRight | (Qt.AlignTop if top else Qt.AlignVCenter)
+        label.setAlignment(alignment)
+        if top:
+            label.setContentsMargins(0, 7, 0, 0)
+        return label
 
     def _described_button(self, title: str, description: str, callback) -> tuple[QPushButton, QLabel]:
         button = DescribedActionButton()
@@ -1818,16 +2105,8 @@ class PipelineWindow(QMainWindow):
         except DouyinPublishError as exc:
             QMessageBox.warning(self, "发布参数不完整", str(exc))
             return
-        answer = QMessageBox.question(
-            self,
-            "确认发布到抖音",
-            f"即将上传并发布：\n视频：{request.video_path.name}\n封面：{request.cover_path.name if request.cover_path else '不设置'}\n\n标题：{request.title}\n话题：{' '.join(request.topics) or '无'}\n\n确认继续？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if answer != QMessageBox.Yes:
-            return
         self.log.appendPlainText(f"抖音发布开始：{request.video_path}")
+        self._douyin_last_publish_succeeded = False
         self._set_douyin_publish_enabled(False)
 
         def worker() -> None:
@@ -1848,13 +2127,16 @@ class PipelineWindow(QMainWindow):
             self.douyin_publish_button.setEnabled(enabled and video_ready)
 
     def _on_douyin_publish_succeeded(self, message: str) -> None:
+        self._douyin_last_publish_succeeded = True
         self._set_douyin_publish_enabled(True)
         self.log.appendPlainText(message)
+        self.refresh_status()
         QMessageBox.information(self, "抖音发布完成", message)
 
     def _on_douyin_publish_failed(self, message: str) -> None:
         self._set_douyin_publish_enabled(True)
         self.log.appendPlainText(f"抖音发布失败：{message}")
+        self.refresh_status()
         QMessageBox.warning(self, "抖音发布失败", message)
 
     def save_settings(self) -> None:
@@ -1914,6 +2196,7 @@ class PipelineWindow(QMainWindow):
         packaging = mode == WORKFLOW_PORTRAIT_PACKAGE
         cover = mode == WORKFLOW_COVER
         publish = mode == WORKFLOW_PUBLISH
+        self._sync_workflow_navigation(mode)
         if self.workflow_tabs is not None:
             self.workflow_tabs.setTabVisible(0, not cover)
             self.workflow_tabs.setTabVisible(1, packaging)
@@ -1925,13 +2208,14 @@ class PipelineWindow(QMainWindow):
         if orientation_combo is not None:
             orientation_combo.setCurrentText(self._workflow_orientation())
         self._update_primary_action()
-        self.batch_button.setVisible(not cover and not publish)
         if self.batch_topic_label is not None:
-            self.batch_topic_label.setVisible(not cover and not publish)
+            self.batch_topic_label.setVisible(True)
         if self.batch_topic_generate_button is not None:
-            self.batch_topic_generate_button.setVisible(not cover and not publish)
-        self.batch_topics.setVisible(not cover and not publish)
-        self.batch_status_label.setVisible(not cover and not publish)
+            self.batch_topic_generate_button.setVisible(True)
+        if self.topic_catalog_button is not None:
+            self.topic_catalog_button.setVisible(True)
+        self.batch_topics.setVisible(True)
+        self.batch_status_label.setVisible(True)
         self._update_project_fields_for_stage()
         self._update_cover_prompt_preview()
         if not packaging:
@@ -1945,27 +2229,7 @@ class PipelineWindow(QMainWindow):
             self.refresh_landscape_projects()
 
     def _update_project_fields_for_stage(self) -> None:
-        mode = self.workflow_mode.currentText() if self.workflow_mode is not None else WORKFLOW_LANDSCAPE
-        cover = mode == WORKFLOW_COVER
-        publish = mode == WORKFLOW_PUBLISH
-        field_visibility = {
-            "topic_direction": not cover and not publish,
-            "topic": True,
-            "context": not publish,
-            "target_chars": not cover and not publish,
-        }
-        for key, visible in field_visibility.items():
-            self.project_labels[key].setVisible(visible)
-            widget = self.context_input if key == "context" else self.inputs[key]
-            widget.setVisible(visible)
-        if self.target_duration_label is not None:
-            self.target_duration_label.setVisible(not cover and not publish)
-        if self.target_chars_group is not None:
-            self.target_chars_group.setVisible(not cover and not publish)
-        if self.topic_generate_button is not None:
-            self.topic_generate_button.setVisible(not cover and not publish)
-        self.project_labels["draft_name"].setVisible(not cover and not publish)
-        self.inputs["draft_name"].setVisible(not cover and not publish)
+        # Theme context remains visible and editable across all three stages.
         if self.project_panel is not None:
             project_layout = self.project_panel.layout()
             if project_layout is not None:
@@ -1984,31 +2248,65 @@ class PipelineWindow(QMainWindow):
         cover = mode == WORKFLOW_COVER
         publish = mode == WORKFLOW_PUBLISH
         package_stage = packaging and self.workflow_tabs is not None and self.workflow_tabs.currentIndex() == 1
+        if self.workflow_actions is not None:
+            self.workflow_actions.setVisible(not publish)
         if publish:
             self.start_button.setText("发布作品")
+            self.start_button.setFixedWidth(116)
             self.start_button.setToolTip("上传视频、封面、标题和话题到抖音")
         elif cover:
             self.start_button.setText("生成封面图")
+            self.start_button.setFixedWidth(124)
             size = self._current_cover_size()
             self.start_button.setToolTip(f"生成当前主题的 {size[2]}×{size[3]} {size[5]}作品封面")
         elif package_stage:
             self.start_button.setText("生成竖版包装草稿")
+            self.start_button.setFixedWidth(164)
             self.start_button.setToolTip("使用已导出的横版 MP4 生成竖版包装草稿")
         elif packaging:
-            self.start_button.setText("生成横版并串联竖版")
+            self.start_button.setText("生成母片并转竖版")
+            self.start_button.setFixedWidth(154)
             self.start_button.setToolTip("生成横版母片、自动导出 MP4，并将导出视频串联到竖版包装")
         else:
             self.start_button.setText("开始执行")
+            self.start_button.setFixedWidth(116)
             self.start_button.setToolTip("")
         if self.continue_button is not None:
             can_start_from_copy = not package_stage and not cover and not publish
             self.continue_button.setVisible(can_start_from_copy)
             if packaging:
-                self.continue_button.setText("从文案生成横版母片")
+                self.continue_button.setText("从文案生成母片")
+                self.continue_button.setFixedWidth(138)
                 self.continue_button.setToolTip("使用当前 wenan.txt，跳过第 01 步，生成横版母片；完成后再进行竖版包装")
             else:
                 self.continue_button.setText("从文案继续")
+                self.continue_button.setFixedWidth(126)
                 self.continue_button.setToolTip("使用当前 wenan.txt，跳过第 01 步，重跑第 02～08 步（会重生成图片）")
+        self._update_workflow_action_visibility()
+
+    def _update_workflow_action_visibility(self) -> None:
+        mode = self.workflow_mode.currentText() if self.workflow_mode is not None else WORKFLOW_LANDSCAPE
+        cover = mode == WORKFLOW_COVER
+        publish = mode == WORKFLOW_PUBLISH
+        package_stage = (
+            mode == WORKFLOW_PORTRAIT_PACKAGE
+            and self.workflow_tabs is not None
+            and self.workflow_tabs.currentIndex() == 1
+        )
+        running = self.runner.running
+        if self.workflow_actions is not None:
+            self.workflow_actions.setVisible(not publish and (not cover or running))
+        if self.video_mode_combo is not None:
+            self.video_mode_combo.setEnabled(not running)
+        self.stop_button.setVisible(running and not publish)
+        self.start_button.setVisible(not running and not cover and not publish)
+        self.batch_button.setVisible(not running and not cover and not publish)
+        if self.cover_generate_button is not None:
+            self.cover_generate_button.setVisible(not running)
+        if self.continue_button is not None:
+            self.continue_button.setVisible(
+                not running and not package_stage and not cover and not publish
+            )
 
     def _selected_landscape_project(self) -> LandscapeProject | None:
         if self.package_project_combo is None:
@@ -2447,6 +2745,11 @@ class PipelineWindow(QMainWindow):
         size = self._current_cover_size()
         if self.cover_canvas_label is not None:
             self.cover_canvas_label.setText(f"{size[2]} × {size[3]}（{size[4]} {size[5]}）")
+        if self.cover_generate_button is not None:
+            self.cover_generate_button.setToolTip(
+                f"生成当前主题的 {size[2]}×{size[3]} {size[5]}作品封面；"
+                "只生成 PNG，不执行视频制作流程"
+            )
         if not topic:
             self.cover_prompt_preview.clear()
             if self.cover_output_label is not None:
@@ -2510,12 +2813,47 @@ class PipelineWindow(QMainWindow):
                 continue
         return generated, len(items)
 
+    def _on_workspace_topic_changed(self, _value: str = "") -> None:
+        self._douyin_last_publish_succeeded = False
+        self._update_stage_statuses()
+
+    def _update_stage_statuses(self) -> None:
+        if not self.workflow_stage_status_labels or "topic" not in self.inputs:
+            return
+        topic = safe_topic(self.inputs["topic"].text())
+        topic_root = OUTPUT_ROOT / topic
+        video_exists = any(
+            path.is_file()
+            for path in (
+                topic_root / "landscape" / "wenan.txt",
+                topic_root / "portrait" / "wenan.txt",
+            )
+        )
+        cover_exists = self.cover_artifact_path().is_file() if self.cover_size_combo is not None else False
+        mode = self.workflow_mode.currentText() if self.workflow_mode is not None else WORKFLOW_LANDSCAPE
+        douyin_running = self._douyin_publish_thread is not None and self._douyin_publish_thread.is_alive()
+
+        video_status = "制作中" if self.runner.running and mode not in {WORKFLOW_COVER, WORKFLOW_PUBLISH} else (
+            "已有产物" if video_exists else "未开始"
+        )
+        asset_status = "生成中" if self.runner.running and mode == WORKFLOW_COVER else (
+            "封面已生成" if cover_exists else "未生成"
+        )
+        publish_status = "发布中" if douyin_running else (
+            "已发布" if self._douyin_last_publish_succeeded else "待发布"
+        )
+        self.workflow_stage_status_labels["视频制作"].setText(video_status)
+        self.workflow_stage_status_labels["作品资产"].setText(asset_status)
+        self.workflow_stage_status_labels["作品发布"].setText(publish_status)
+
     def refresh_status(self) -> None:
         running = self.runner.running
         jianying_running = self._jianying_automation_thread is not None and self._jianying_automation_thread.is_alive()
         jianying_supported = os.name == "nt" or sys.platform == "darwin"
         douyin_running = self._douyin_publish_thread is not None and self._douyin_publish_thread.is_alive()
         topic_generation_running = self._topic_generation_thread is not None and self._topic_generation_thread.is_alive()
+        self._update_stage_statuses()
+        self._update_workflow_action_visibility()
         self.start_button.setEnabled(not running)
         self.batch_button.setEnabled(not running)
         if self.continue_button is not None:
@@ -2536,7 +2874,8 @@ class PipelineWindow(QMainWindow):
                 self.cover_view_button.setEnabled(exists and not running)
             if self.cover_folder_button is not None:
                 self.cover_folder_button.setEnabled(not running)
-            self.start_button.setEnabled(not running)
+            if self.cover_generate_button is not None:
+                self.cover_generate_button.setEnabled(not running)
             self.stop_button.setEnabled(running)
             return
         if publish_mode:

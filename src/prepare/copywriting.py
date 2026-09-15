@@ -74,7 +74,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("-o", "--output", type=Path, help="默认 output/<topic>/wenan.txt")
     parser.add_argument("--output-root", type=Path, default=DEFAULT_OUTPUT_ROOT)
     parser.add_argument("--reference", type=Path, default=DEFAULT_REFERENCE, help="参考样例文件或目录；默认读取 copywriting_style_reference.md")
-    parser.add_argument("--target-chars", type=int, default=500, help="文案最长字数；0 表示不限制。")
+    parser.add_argument("--target-chars", type=int, default=700, help="文案最长字数；0 表示不限制。")
     parser.add_argument("--story-world", default="", help="可选故事载体，例如快递站、图书馆、工厂、餐馆；留空或填写自动选择时由模型判断是否需要。")
     parser.add_argument("--context", default="", help="补充主题背景、概念定义或行文思路，帮助模型避免歧义。")
     parser.add_argument("--api-key", default="", help="默认读取 DEEPSEEK_API_KEY")

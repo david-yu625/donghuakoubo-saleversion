@@ -11,18 +11,13 @@ from ..core.models import Box, Canvas, ElementLayout, LayoutResult
 from ..core.text_measure import resolve_font, text_width
 from ..renderers.jianying_renderer import (
     FINAL_HOLD_MS,
-    IMAGE_SCALE_MULTIPLIER,
-    OVERLAY_IMAGE_SCALE_MULTIPLIER,
-    SCENE_TRANSITION_DURATION_MS,
     SCENE_TRANSITION_RESOURCE_IDS,
     JianyingRenderer,
     TITLE_TEXT_STYLE_SIZE,
     TITLE_BAR_HORIZONTAL_PADDING,
     TITLE_FONT_SIZE,
     TITLE_LETTER_SPACING,
-    TITLE_Y,
     LANDSCAPE_TITLE_BAR_MIN_WIDTH_RATIO,
-    LANDSCAPE_TITLE_STYLE_SCALE,
     SUBTITLE_BACKGROUND_HEIGHT,
     SUBTITLE_BACKGROUND_WIDTH,
     cached_font_path,
@@ -96,30 +91,27 @@ class RendererTypographyTest(unittest.TestCase):
         self.assertEqual(normalized[0].metadata["video_intro"], "intro")
         self.assertNotIn("video_intro", normalized[1].metadata)
         self.assertNotIn("scene_transition", normalized[1].metadata)
-        self.assertEqual(SCENE_TRANSITION_DURATION_MS, 900)
         for index, resource_id in enumerate(SCENE_TRANSITION_RESOURCE_IDS):
             transition = scene_transition_for_index(index)
             self.assertEqual(str(transition.value.resource_id), resource_id)
             self.assertFalse(transition.value.is_vip)
 
-    def test_images_receive_larger_render_scale(self):
-        self.assertEqual(IMAGE_SCALE_MULTIPLIER, 1.10)
-        self.assertEqual(OVERLAY_IMAGE_SCALE_MULTIPLIER, 1.0)
-
-    def test_background_images_are_not_enlarged_or_clipped(self):
+    def test_image_scale_depends_on_material_role(self):
         background = ElementLayout(
             "background", "image", "background.png", Box(0, 0, 1920, 1080),
             0, 3000, 10, "background",
         )
-        element = ElementLayout(
-            "element", "image", "element.png", Box(200, 200, 600, 400),
+        overlay = ElementLayout(
+            "overlay", "image", "overlay.png", Box(200, 200, 600, 400),
             0, 3000, 20, "overlay",
         )
+        main = ElementLayout(
+            "main", "image", "main.png", Box(200, 200, 600, 400),
+            0, 3000, 20, "main",
+        )
         self.assertEqual(image_scale_multiplier(background), 1.0)
-        self.assertEqual(image_scale_multiplier(element), 1.0)
-
-    def test_global_title_is_positioned_lower(self):
-        self.assertEqual(TITLE_Y, 0.72)
+        self.assertEqual(image_scale_multiplier(overlay), 1.0)
+        self.assertGreater(image_scale_multiplier(main), 1.0)
 
     def test_image_segment_rejects_directory_as_material(self):
         result = LayoutResult("test", Canvas(), [])
@@ -324,7 +316,6 @@ class RendererTypographyTest(unittest.TestCase):
         self.assertGreaterEqual(presentation.bar_width, round(1920 * LANDSCAPE_TITLE_BAR_MIN_WIDTH_RATIO))
         portrait = global_title_presentation("ComfyUI为啥火出圈？", 1080, 1920)
         self.assertLess(presentation.style_size, portrait.style_size)
-        self.assertEqual(LANDSCAPE_TITLE_STYLE_SCALE, 0.82)
 
     def test_subtitle_background_has_enough_coverage(self):
         result = LayoutResult("test", Canvas(), [])

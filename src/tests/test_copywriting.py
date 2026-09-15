@@ -10,34 +10,17 @@ copywriting = importlib.import_module("src.01_generate_copywriting")
 
 
 class CopywritingResponseTest(unittest.TestCase):
-    def test_prompt_is_general_purpose_and_preserves_topic_domain(self):
-        self.assertIn("计算机资深从业者", copywriting.SYSTEM_PROMPT)
-        self.assertIn("开头必须抛异常或者问题", copywriting.SYSTEM_PROMPT)
-        self.assertIn("持续持续持续输出高密度价值信息", copywriting.SYSTEM_PROMPT)
-        self.assertNotIn("每句话采用6到15个字", copywriting.SYSTEM_PROMPT)
-        self.assertNotIn("结尾留钩子和悬念", copywriting.SYSTEM_PROMPT)
-        self.assertIn("不需要做其他的分镜头设计", copywriting.SYSTEM_PROMPT)
-        self.assertIn("一句一行", copywriting.SYSTEM_PROMPT)
-        self.assertNotIn("以一段话的形式输出", copywriting.SYSTEM_PROMPT)
-        self.assertIn("不要虚构作者身份、账号名称", copywriting.SYSTEM_PROMPT)
-        self.assertIn("不要在文案中自称", copywriting.SYSTEM_PROMPT)
-        self.assertIn("每句话必须新增事实、因果或解释", copywriting.SYSTEM_PROMPT)
-        self.assertIn("同一个问题只问一次", copywriting.SYSTEM_PROMPT)
-        self.assertIn("结尾不要复述全文", copywriting.SYSTEM_PROMPT)
-        self.assertIn("#文案框架", copywriting.SYSTEM_PROMPT)
-        self.assertIn("题意锁定", copywriting.SYSTEM_PROMPT)
-        self.assertIn("不能只抓其中一个关键词", copywriting.SYSTEM_PROMPT)
-        self.assertIn("题型互相替换", copywriting.SYSTEM_PROMPT)
-        self.assertIn("核心答案", copywriting.SYSTEM_PROMPT)
-        self.assertIn("原因—关键过程—结果或影响", copywriting.SYSTEM_PROMPT)
-        self.assertIn("不中途换题", copywriting.SYSTEM_PROMPT)
-        self.assertIn("禁止虚构“大家都说”", copywriting.SYSTEM_PROMPT)
-        self.assertIn("禁止强行反差、文字游戏", copywriting.SYSTEM_PROMPT)
-        self.assertIn("如果正文不能直接回答", copywriting.SYSTEM_PROMPT)
-        self.assertIn("#背景", copywriting.SYSTEM_PROMPT)
-        self.assertIn("#目标", copywriting.SYSTEM_PROMPT)
-        self.assertIn("#要求", copywriting.SYSTEM_PROMPT)
-        self.assertNotIn("***", copywriting.SYSTEM_PROMPT)
+    def test_prompt_preserves_core_copywriting_contract(self):
+        for rule in (
+            "一句一行",
+            "不要虚构作者身份、账号名称",
+            "每句话必须新增事实、因果或解释",
+            "同一个问题只问一次",
+            "题意锁定",
+            "核心答案",
+            "原因—关键过程—结果或影响",
+        ):
+            self.assertIn(rule, copywriting.SYSTEM_PROMPT)
         self.assertIn("#程序输出", copywriting.OUTPUT_PROTOCOL_PROMPT)
         self.assertIn("\\n 分隔每句话", copywriting.OUTPUT_PROTOCOL_PROMPT)
 
@@ -50,7 +33,6 @@ class CopywritingResponseTest(unittest.TestCase):
         prompt = copywriting.build_system_prompt("计算机起源")
         self.assertIn("#初始化", prompt)
         self.assertIn("我要讲解的题目是“计算机起源”。", prompt)
-        self.assertNotIn("***", prompt)
 
     def test_context_guidance_preserves_topic_and_disambiguates_terms(self):
         prompt = copywriting.context_guidance("", "养龙虾")

@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-import json
 import os
 import re
-from datetime import datetime, timezone
+import json
+from collections.abc import Callable
 from pathlib import Path
 
 from openai import OpenAI
 
 from ..env import load_env_file
+from .copywriting import extract_json_object, repair_json_string_syntax, strip_code_fence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_ROOT = PROJECT_ROOT / "output"
-HISTORY_PATH = OUTPUT_ROOT / "topic_history.jsonl"
+TOPIC_LIST_PATH = PROJECT_ROOT / "data" / "主题清单.md"
 DEFAULT_MODEL = "deepseek-chat"
 DEFAULT_BASE_URL = "https://api.deepseek.com"
 
@@ -50,6 +51,13 @@ def normalize_topic(value: str) -> str:
 def topic_comparison_key(value: str) -> str:
     """Collapse harmless question wrappers so reordered titles still compare equal."""
     text = normalize_topic(value)
+    for source, replacement in (
+        ("磁盘", "硬盘"),
+        ("电脑", "计算机"),
+        ("为何", "为什么"),
+        ("怎样", "如何"),
+    ):
+        text = text.replace(source, replacement)
     for prefix in ("什么是", "为什么", "为何", "何为", "如何理解", "如何", "怎么理解", "怎么", "怎样"):
         if text.startswith(prefix) and len(text) > len(prefix):
             text = text[len(prefix):]
@@ -76,21 +84,6 @@ def _topic_is_similar(candidate: str, used: list[str]) -> bool:
     return False
 
 
-def _read_history(path: Path = HISTORY_PATH) -> list[dict[str, str]]:
-    if not path.is_file():
-        return []
-    entries: list[dict[str, str]] = []
-    for line in path.read_text(encoding="utf-8-sig").splitlines():
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        topic = str(value.get("topic", "")).strip()
-        if topic:
-            entries.append({"topic": topic, "status": str(value.get("status", "generated"))})
-    return entries
-
-
 def _scan_existing_projects(output_root: Path = OUTPUT_ROOT) -> list[str]:
     if not output_root.is_dir():
         return []
@@ -103,9 +96,56 @@ def _scan_existing_projects(output_root: Path = OUTPUT_ROOT) -> list[str]:
     return topics
 
 
-def load_used_topics(*, output_root: Path = OUTPUT_ROOT, history_path: Path = HISTORY_PATH) -> list[str]:
-    values = [entry["topic"] for entry in _read_history(history_path)]
+def load_topic_catalog(path: Path = TOPIC_LIST_PATH) -> tuple[list[str], list[str]]:
+    """Read the project Markdown topic list.
+
+    Returns ``(listed_topics, discouraged_topics)``.  Topics marked with
+    ``[感觉一般]`` remain part of the listed pool and are also returned in
+    the discouraged pool so generation can avoid obvious variants.
+    """
+    if not path.is_file():
+        return [], []
+    listed: list[str] = []
+    discouraged: list[str] = []
+    section_discouraged = False
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        heading = re.match(r"^\s*#{1,6}\s*(.+?)\s*$", line)
+        if heading:
+            heading_text = heading.group(1)
+            section_discouraged = any(
+                marker in heading_text
+                for marker in ("感觉一般", "暂缓", "不太好")
+            )
+            continue
+        match = re.match(r"^\s*-\s*(?:\[[ xX]\]\s*)?(.+?)\s*$", line)
+        if not match:
+            continue
+        raw_topic = match.group(1).strip()
+        is_discouraged = section_discouraged or "[感觉一般]" in raw_topic
+        topic = re.sub(r"\s*\[感觉一般\]\s*", "", raw_topic).strip()
+        if not topic:
+            continue
+        listed.append(topic)
+        if is_discouraged:
+            discouraged.append(topic)
+    return listed, discouraged
+
+
+def load_used_topics(
+    *,
+    output_root: Path = OUTPUT_ROOT,
+    history_path: Path | None = None,
+    topic_list_path: Path | None = None,
+    current_topic: str = "",
+) -> list[str]:
+    if topic_list_path is None:
+        topic_list_path = TOPIC_LIST_PATH if output_root.resolve() == OUTPUT_ROOT.resolve() else None
+    listed_topics = load_topic_catalog(topic_list_path)[0] if topic_list_path is not None else []
+    del history_path  # Kept for compatibility with older callers; Markdown is the history source now.
+    values = list(listed_topics)
     values.extend(_scan_existing_projects(output_root))
+    if current_topic.strip():
+        values.append(current_topic.strip())
     unique: list[str] = []
     seen: set[str] = set()
     for value in values:
@@ -116,26 +156,84 @@ def load_used_topics(*, output_root: Path = OUTPUT_ROOT, history_path: Path = HI
     return unique
 
 
-def record_topic(topic: str, *, status: str = "generated", history_path: Path = HISTORY_PATH) -> None:
+def record_topic(
+    topic: str,
+    *,
+    status: str = "generated",
+    history_path: Path | None = None,
+    topic_list_path: Path = TOPIC_LIST_PATH,
+) -> None:
+    """Record a topic in the durable Markdown catalog.
+
+    ``history_path`` is accepted only for compatibility; no JSONL history is
+    written. Generated topics are added to the unreviewed section, while used
+    topics are moved to the existing section.
+    """
     topic = topic.strip()
     if not topic:
         raise ValueError("主题不能为空")
-    history_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = {normalize_topic(item["topic"]): item for item in _read_history(history_path)}
-    key = normalize_topic(topic)
-    if key in existing:
-        if status == "used" and existing[key].get("status") != "used":
-            with history_path.open("a", encoding="utf-8") as file:
-                file.write(json.dumps({"topic": topic, "status": status, "updated_at": datetime.now(timezone.utc).isoformat()}, ensure_ascii=False) + "\n")
-        return
-    with history_path.open("a", encoding="utf-8") as file:
-        file.write(json.dumps({"topic": topic, "status": status, "created_at": datetime.now(timezone.utc).isoformat()}, ensure_ascii=False) + "\n")
+    del history_path  # Markdown is the single durable topic history.
+    path = topic_list_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = path.read_text(encoding="utf-8-sig").splitlines() if path.is_file() else [
+        "# 视频主题清单",
+        "",
+        "## 已有主题",
+        "",
+        "## 待制作主题（暂缓/感觉一般）",
+        "",
+        "## 待评估主题（尚未查看）",
+        "",
+    ]
+    target_key = normalize_topic(topic)
+    matches: list[int] = []
+    in_existing = False
+    existing_heading: int | None = None
+    pending_heading: int | None = None
+    unreviewed_heading: int | None = None
+    for index, line in enumerate(lines):
+        heading = re.match(r"^\s*#{1,6}\s*(.+?)\s*$", line)
+        if heading:
+            heading_text = heading.group(1).strip()
+            in_existing = heading_text == "已有主题"
+            if in_existing and existing_heading is None:
+                existing_heading = index
+            if heading_text.startswith("待制作主题") and pending_heading is None:
+                pending_heading = index
+            if heading_text.startswith("待评估主题") and unreviewed_heading is None:
+                unreviewed_heading = index
+            continue
+        match = re.match(r"^\s*-\s*(?:\[[ xX]\]\s*)?(.+?)\s*$", line)
+        if match:
+            listed = re.sub(r"\s*\[感觉一般\]\s*", "", match.group(1)).strip()
+            if normalize_topic(listed) == target_key:
+                matches.append(index)
+    if status == "used":
+        if existing_heading is None:
+            lines.extend(["", "## 已有主题"])
+            existing_heading = len(lines) - 1
+        lines = [line for index, line in enumerate(lines) if index not in set(matches)]
+        existing_heading = next(index for index, line in enumerate(lines) if re.match(r"^\s*#{1,6}\s*已有主题\s*$", line))
+        lines.insert(existing_heading + 1, f"- [x] {topic}")
+    elif not matches:
+        if unreviewed_heading is None:
+            lines.extend(["", "## 待评估主题（尚未查看）"])
+            unreviewed_heading = len(lines) - 1
+        lines.insert(unreviewed_heading + 1, f"- [ ] {topic}")
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def _parse_topic_candidates(value: str) -> list[dict[str, object]]:
-    start, end = value.find("{"), value.rfind("}")
-    candidate = value[start:end + 1] if start >= 0 and end > start else value
-    data = json.loads(candidate)
+    candidate = extract_json_object(strip_code_fence(value))
+    data: object | None = None
+    for payload in (candidate, repair_json_string_syntax(candidate)):
+        try:
+            data = json.loads(payload)
+            break
+        except json.JSONDecodeError:
+            continue
+    if data is None:
+        raise ValueError("模型返回的主题格式不完整")
     if not isinstance(data, dict):
         raise ValueError("模型返回格式不是 JSON 对象")
     raw_candidates = data.get("candidates")
@@ -190,8 +288,11 @@ def generate_unique_topic(
     model: str = DEFAULT_MODEL,
     base_url: str = DEFAULT_BASE_URL,
     output_root: Path = OUTPUT_ROOT,
-    history_path: Path = HISTORY_PATH,
+    history_path: Path | None = None,
+    topic_list_path: Path | None = None,
+    current_topic: str = "",
     max_attempts: int = 4,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> str:
     load_env_file(PROJECT_ROOT / ".env")
     direction = direction.strip()
@@ -203,9 +304,25 @@ def generate_unique_topic(
     key = api_key or os.getenv("DEEPSEEK_API_KEY", "")
     if not key:
         raise ValueError("缺少 DEEPSEEK_API_KEY")
-    used = load_used_topics(output_root=output_root, history_path=history_path)
+    current_topic = current_topic.strip()
+    used = load_used_topics(
+        output_root=output_root,
+        history_path=history_path,
+        topic_list_path=topic_list_path,
+        current_topic=current_topic,
+    )
+    if topic_list_path is None:
+        topic_list_path = TOPIC_LIST_PATH if output_root.resolve() == OUTPUT_ROOT.resolve() else None
+    _, discouraged = load_topic_catalog(topic_list_path) if topic_list_path is not None else ([], [])
     client = OpenAI(api_key=key, base_url=base_url or os.getenv("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL))
     history = "\n".join(f"- {topic}" for topic in used[-300:]) or "（暂无历史主题）"
+    discouraged_prompt = (
+        "以下主题被标记为[感觉一般]，不要生成它们的近似换皮主题：\n"
+        + "\n".join(f"- {topic}" for topic in discouraged)
+        + "\n\n"
+        if discouraged
+        else ""
+    )
     direction_prompt = (
         f"用户指定的选题大方向是：{direction}\n"
         "新主题必须直接属于这个方向，并下钻到一个具体概念、机制、操作细节、判断方法、常见误区或失败原因。\n"
@@ -220,14 +337,23 @@ def generate_unique_topic(
         if context else
         "用户没有补充上下文，请默认面向普通电脑和科技产品用户，优先选择能解决真实问题的主题。\n\n"
     )
+    current_topic_prompt = (
+        f"当前编辑中的主题是：{current_topic}\n"
+        "新主题可以延续同一大方向或受众，但必须切换到不同的具体问题、机制或行动，不能复述当前主题。\n\n"
+        if current_topic
+        else ""
+    )
     user_prompt = (
         direction_prompt
         + context_prompt
+        + current_topic_prompt
         + "请提出 6 个候选主题并按综合评分从高到低排列。以下主题已经生成过或使用过，不能重复，也不能只换同义词：\n"
         + history
-        + "\n\n如果历史中已有相近主题，请改讲这个方向下的另一个具体问题。每个候选都必须能在 60~120 秒内讲清，并给出明确可执行行动。"
+        + "\n\n"
+        + discouraged_prompt
+        + "如果历史中已有相近主题，请改讲这个方向下的另一个具体问题。每个候选都必须能在 60~120 秒内讲清，并给出明确可执行行动。"
     )
-    for _ in range(max_attempts):
+    for attempt in range(1, max_attempts + 1):
         response = client.chat.completions.create(
             model=model,
             messages=[{"role": "system", "content": TOPIC_SYSTEM_PROMPT}, {"role": "user", "content": user_prompt}],
@@ -236,7 +362,16 @@ def generate_unique_topic(
             # 120 tokens is too small and can truncate the JSON mid-response.
             max_tokens=1200,
         )
-        candidates = _parse_topic_candidates(response.choices[0].message.content or "")
+        try:
+            candidates = _parse_topic_candidates(response.choices[0].message.content or "")
+        except ValueError:
+            if progress_callback is not None:
+                progress_callback(f"模型返回格式不完整，正在自动重试（{attempt}/{max_attempts}）")
+            user_prompt += (
+                "\n上一次输出无法解析。请重新生成完整结果，严格只输出一个合法 JSON 对象，"
+                "确保字符串中的引号已经转义，并检查每个字段和候选项之间都有逗号。"
+            )
+            continue
         candidates.sort(key=_candidate_score, reverse=True)
         topic = next(
             (
@@ -248,14 +383,40 @@ def generate_unique_topic(
             "",
         )
         if not topic:
+            if progress_callback is not None:
+                progress_callback(f"候选主题与历史重复或无效，正在自动重试（{attempt}/{max_attempts}）")
             user_prompt += "\n模型返回的候选主题都与历史重复、过短或无效，请重新提出一组不同核心问题。"
             continue
-        record_topic(topic, status="generated", history_path=history_path)
+        if topic_list_path is not None or output_root.resolve() == OUTPUT_ROOT.resolve():
+            record_topic(
+                topic,
+                status="generated",
+                history_path=history_path,
+                topic_list_path=topic_list_path or TOPIC_LIST_PATH,
+            )
         return topic
-    raise RuntimeError("模型连续生成重复主题，请稍后重试")
+    raise RuntimeError("模型连续返回无效或重复主题，请稍后重试")
 
 
-def generate_unique_topics(count: int, **kwargs) -> list[str]:
+def generate_unique_topics(
+    count: int,
+    *,
+    progress_callback: Callable[[str], None] | None = None,
+    **kwargs,
+) -> list[str]:
     if count < 1 or count > 30:
         raise ValueError("批量主题数量必须在 1 到 30 之间")
-    return [generate_unique_topic(**kwargs) for _ in range(count)]
+    topics: list[str] = []
+    for index in range(1, count + 1):
+        if progress_callback is not None:
+            progress_callback(f"正在生成第 {index}/{count} 个主题...")
+
+        def report_attempt(message: str, *, current: int = index) -> None:
+            if progress_callback is not None:
+                progress_callback(f"第 {current}/{count} 个主题：{message}")
+
+        topic = generate_unique_topic(progress_callback=report_attempt, **kwargs)
+        topics.append(topic)
+        if progress_callback is not None:
+            progress_callback(f"第 {index}/{count} 个主题生成完成：{topic}")
+    return topics

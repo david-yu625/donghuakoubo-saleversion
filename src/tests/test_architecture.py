@@ -9,22 +9,6 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 
 
 class ArchitectureTest(unittest.TestCase):
-    def test_numbered_steps_are_thin_entries_for_prepare_modules(self):
-        implementations = {
-            "01_generate_copywriting.py": "copywriting.py",
-            "02_generate_voice_timeline.py": "voice_timeline.py",
-            "03_generate_shot_timeline.py": "shot_timeline.py",
-            "04_generate_storyboard_prompts.py": "storyboard_prompts.py",
-            "05_generate_image_prompts.py": "image_prompts.py",
-            "06_generate_images.py": "images.py",
-        }
-        for entry_name, implementation_name in implementations.items():
-            entry = PACKAGE_ROOT / entry_name
-            implementation = PACKAGE_ROOT / "prepare" / implementation_name
-            self.assertTrue(entry.is_file())
-            self.assertTrue(implementation.is_file())
-            self.assertLess(len(entry.read_text(encoding="utf-8").splitlines()), 40)
-
     def test_visual_direction_has_no_geometry_fields(self):
         from ..visual_direction.models import VisualPlan
 

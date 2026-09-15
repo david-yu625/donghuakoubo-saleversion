@@ -229,6 +229,15 @@ def parse_model_content(text: str, shots: list[dict[str, str]]) -> list[dict[str
         if not line:
             continue
         header = normalize_title_header(line)
+        # Models occasionally replace the required numbered heading with the
+        # actual shot title (for example ``【内存与硬盘的定位】``).  Treat a
+        # standalone bracketed line as the next title section so one formatting
+        # deviation does not discard an otherwise valid response.  The final
+        # section-order validation below still guarantees one section per shot.
+        if not header and re.fullmatch(r"【[^】\n]+】", line):
+            fallback_index = len(plans) + (1 if current is not None else 0)
+            if fallback_index < len(expected_headers):
+                header = expected_headers[fallback_index]
         if header in expected_headers:
             if current is not None:
                 plans.append(current)
@@ -301,6 +310,14 @@ def normalize_model_content(text: str, title_count: int) -> str:
         (index for index, line in enumerate(lines) if normalize_title_header(line) == "【标题1】"),
         None,
     )
+    if first_header is None:
+        # Also recognize a model's common ``【实际标题】`` variant when
+        # locating the first section, allowing harmless preamble text to be
+        # removed before normal parsing.
+        first_header = next(
+            (index for index, line in enumerate(lines) if re.fullmatch(r"\s*【[^】\n]+】\s*", line)),
+            None,
+        )
     if first_header is None:
         return normalized
     return "\n".join(lines[first_header:]).strip()

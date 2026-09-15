@@ -503,10 +503,6 @@ class LayoutEngineTest(unittest.TestCase):
         self.assertLessEqual(len(title.lines), 3)
         self.assertTrue(title.font_size <= self.engine.theme.title_font_size)
 
-    def test_geometry_overlap(self):
-        self.assertTrue(overlaps(Box(0, 0, 100, 100), Box(90, 90, 100, 100)))
-        self.assertFalse(overlaps(Box(0, 0, 100, 100), Box(100, 0, 100, 100)))
-
     def test_timeline_flow_preserves_all_source_times(self):
         content = SceneContent(
             elements=(

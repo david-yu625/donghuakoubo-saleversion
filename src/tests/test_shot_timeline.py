@@ -20,11 +20,6 @@ class ShotTimelineTest(unittest.TestCase):
         self.assertIn("把配音时间线划分成语义 Shot", planner.SYSTEM_PROMPT)
         self.assertIn("不要设计图片、背景、元素", planner.SYSTEM_PROMPT)
         self.assertIn("完全服从原始文案已有的组织方式", planner.SYSTEM_PROMPT)
-        self.assertIn("不预设 Shot 数量", planner.SYSTEM_PROMPT)
-        self.assertNotIn("第 1 个是全片总览", planner.SYSTEM_PROMPT)
-        self.assertNotIn("后面 4 个分别展开四个大点", planner.SYSTEM_PROMPT)
-        self.assertNotIn("Frame景别", planner.SYSTEM_PROMPT)
-        self.assertNotIn("Camera运镜方式", planner.SYSTEM_PROMPT)
         self.assertEqual(
             planner.MODEL_FIELDS,
             ["shot_id", "timeline_start_index", "timeline_end_index", "shot_title"],

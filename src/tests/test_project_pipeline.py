@@ -104,6 +104,36 @@ class ProjectPipelineTest(unittest.TestCase):
             self.assertTrue(all(len(element.lines) == 1 for element in landscape_subtitles))
             self.assertTrue(all(element.metadata["jianying_text_size"] == 5.0 for element in landscape_subtitles))
 
+    def test_rejects_element_table_from_stale_shot_timeline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "wenan.txt").write_text("测试文案\n", encoding="utf-8")
+            (project / "timeline.csv").write_text("index,text,time\n", encoding="utf-8")
+            write_csv(project / "shot_timeline_source_time.csv", [
+                "shot_id", "分镜标题", "开始时间ms", "结束时间ms", "分镜对应原始文案内容",
+            ], [["1", "测试", "0", "6500", "测试文案"]])
+            write_csv(project / "element_timeline_with_assets.csv", [
+                "element_id", "shot_id", "type", "content", "start_ms", "end_ms", "asset_path",
+            ], [["s1_bg01", "1", "image", "背景", "0", "8820", ""]])
+
+            with self.assertRaisesRegex(ValueError, "重新运行第05步"):
+                load_project(project)
+
+    def test_missing_image_explains_that_step_06_must_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            project = Path(directory)
+            (project / "wenan.txt").write_text("测试文案\n", encoding="utf-8")
+            (project / "timeline.csv").write_text("index,text,time\n", encoding="utf-8")
+            write_csv(project / "shot_timeline_source_time.csv", [
+                "shot_id", "分镜标题", "开始时间ms", "结束时间ms", "分镜对应原始文案内容",
+            ], [["1", "测试", "0", "6500", "测试文案"]])
+            write_csv(project / "element_timeline_with_assets.csv", [
+                "element_id", "shot_id", "type", "content", "start_ms", "end_ms", "asset_path",
+            ], [["s1_img01", "1", "image", "图片", "0", "6500", str(project / "missing.png")]])
+
+            with self.assertRaisesRegex(FileNotFoundError, "第06步"):
+                build_scene_facts(load_project(project))
+
 
 def write_csv(path: Path, fieldnames: list[str], rows: list[list[str]]) -> None:
     with path.open("w", encoding="utf-8-sig", newline="") as file:

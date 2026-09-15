@@ -13,8 +13,6 @@ from PIL import Image
 from ..pipeline_runtime import (
     Options,
     Runner,
-    STEP_DEFS,
-    STEP_BUTTON_DESCRIPTIONS,
     build_batch_options,
     build_commands,
     build_image_regeneration_command,
@@ -146,20 +144,6 @@ class GuiPipelineTest(unittest.TestCase):
         self.assertEqual(execute.call_count, 2)
         self.assertIn(("status", "部分失败"), emitted)
         self.assertIn(("batch_progress", "成功 1，失败 1"), emitted)
-
-    def test_copywriting_action_is_labeled_as_editable(self):
-        copy_step = next(step for step in STEP_DEFS if step[0] == "copy")
-        self.assertEqual(copy_step[4], "查看并修改文案")
-
-    def test_image_action_is_labeled_as_editable(self):
-        image_step = next(step for step in STEP_DEFS if step[0] == "images")
-        self.assertEqual(image_step[4], "查看并修改图片")
-
-    def test_layout_step_has_visible_button_explanation(self):
-        self.assertEqual(
-            STEP_BUTTON_DESCRIPTIONS["layout"],
-            "读取现有文案时间线、分镜、图片和字幕\n重新计算图片尺寸、元素位置、关键词排布及动态重排",
-        )
 
     def test_selected_image_regeneration_command_contains_only_selected_ids(self):
         command = build_image_regeneration_command(

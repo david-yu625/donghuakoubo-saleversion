@@ -11,9 +11,14 @@ from ..settings import default_background_image, load_render_settings, resolve_v
 
 
 class VisualThemeSettingsTest(unittest.TestCase):
-    def test_all_theme_inputs_resolve_to_white_board(self):
+    def test_legacy_theme_values_resolve_to_white_board_assets(self):
         self.assertEqual(resolve_visual_theme("brown").label, "白色主题")
         self.assertEqual(resolve_visual_theme("白色主题").key, "white")
+        root = Path("/project")
+        self.assertEqual(
+            default_background_image(root, "brown"),
+            root / "picturies/background/background_2.png",
+        )
 
     def test_current_theme_accepts_saved_color_overrides(self):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
@@ -59,18 +64,6 @@ class VisualThemeSettingsTest(unittest.TestCase):
 
         self.assertEqual(settings.title_color, "#ABCDEF")
         self.assertEqual(settings.subtitle_background_color, "#123456")
-
-    def test_every_theme_value_resolves_to_white_background_asset(self):
-        root = Path("/project")
-        self.assertEqual(
-            default_background_image(root, "brown"),
-            root / "picturies/background/background_2.png",
-        )
-        self.assertEqual(
-            default_background_image(root, "white"),
-            root / "picturies/background/background_2.png",
-        )
-
 
 if __name__ == "__main__":
     unittest.main()

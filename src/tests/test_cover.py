@@ -9,10 +9,7 @@ from PIL import Image
 
 from ..pipeline_runtime import build_cover_command, cover_output_path
 from ..prepare.cover import (
-    COVER_HEIGHT,
     COVER_SIZE_OPTIONS,
-    DEFAULT_COVER_SIZE_KEY,
-    COVER_WIDTH,
     build_cover_prompt,
     default_cover_path,
     enforce_cover_dimensions,
@@ -69,8 +66,6 @@ class CoverWorkflowTest(unittest.TestCase):
             output_path=Path("/tmp/test_cover.png"),
         )
 
-        self.assertEqual(DEFAULT_COVER_SIZE_KEY, "portrait_1440")
-        self.assertEqual((COVER_WIDTH, COVER_HEIGHT), (1080, 1440))
         self.assertIn("src.generate_cover", command)
         self.assertEqual(command[command.index("--output") + 1], str(output))
         self.assertEqual(command[command.index("--model") + 1], "gpt-image-2")

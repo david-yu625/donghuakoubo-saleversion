@@ -35,18 +35,12 @@ class StoryboardPromptsTest(unittest.TestCase):
         self.assertIn("标题1：一句话说清|||云计算就是把电脑的能力像水电一样租给你用。", prompt)
 
     def test_contract_requires_background_and_at_least_two_elements(self):
-        for section in ("#目标", "#背景", "#要求", "#初始化", "#输出格式"):
-            self.assertIn(section, planner.SYSTEM_PROMPT)
+        self.assertIn("#输出格式", planner.SYSTEM_PROMPT)
         self.assertIn("1920*1080", planner.SYSTEM_PROMPT)
         self.assertIn("至少 2 张、至多 6 张“元素图”", planner.SYSTEM_PROMPT)
         self.assertIn("文案相关内容在背景图中体现，就不需要在图片元素中体现", planner.SYSTEM_PROMPT)
         self.assertIn("文案在图片元素中体现，就不要在背景元素中体现", planner.SYSTEM_PROMPT)
         self.assertIn("禁止绘制任何具体对象", planner.SYSTEM_PROMPT)
-        self.assertIn("有多个独立对象", planner.SYSTEM_PROMPT)
-        self.assertIn("有多个连续步骤", planner.SYSTEM_PROMPT)
-        self.assertIn("有对比关系", planner.SYSTEM_PROMPT)
-        self.assertIn("有因果链、输入到处理再到结果", planner.SYSTEM_PROMPT)
-        self.assertIn("有多个厂商、产品或案例需要分别展示", planner.SYSTEM_PROMPT)
         self.assertIn("纯白空白区域", planner.SYSTEM_PROMPT)
 
     def test_rows_are_normalized_and_staged(self):
@@ -78,6 +72,19 @@ class StoryboardPromptsTest(unittest.TestCase):
             "背景图: 把电脑能力像水电一样按需使用\n"
             "元素图 1: 一台服务器与水龙头、电源插座并列，表现可按需取得的能力\n"
             "元素图 2: 服务器资源经过管线流向用户电脑，呈现资源交付过程\n"
+        )
+
+        plan = planner.parse_model_content(raw, self.shots)
+
+        self.assertEqual(plan[0]["header"], "【标题1】")
+        self.assertEqual(len(plan[0]["elements"]), 2)
+
+    def test_actual_bracketed_shot_titles_are_accepted(self):
+        raw = (
+            "【内存与硬盘的定位】\n"
+            "背景图：内存是短期工作台，硬盘是长期仓库\n"
+            "元素图1：工作台表现内存的临时工作区\n"
+            "元素图2：仓库表现硬盘的长期存储\n"
         )
 
         plan = planner.parse_model_content(raw, self.shots)

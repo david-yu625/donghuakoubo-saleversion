@@ -71,9 +71,10 @@ class ImagePromptStyleTest(unittest.TestCase):
         self.assertEqual(default_image_size("横屏"), (1536, 864))
         self.assertIn("16:9 横屏", prompt)
 
-    def test_background_id_is_detected_by_role(self):
+    def test_element_identifiers_drive_roles_and_asset_names(self):
         self.assertTrue(is_background_element("s3_bg01"))
         self.assertFalse(is_background_element("s3_img01"))
+        self.assertEqual(safe_filename("1", "s1_img02", "很长很长的图片描述"), "s1_img02.png")
 
     def test_visual_design_is_not_rewritten(self):
         self.assertEqual(
@@ -81,10 +82,6 @@ class ImagePromptStyleTest(unittest.TestCase):
             "AI总结器把四张报告压缩成一张摘要卡",
         )
         self.assertEqual(visual_only_content("  一只手掌\n按下按钮  "), "一只手掌 按下按钮")
-
-    def test_asset_filename_uses_only_the_element_number(self):
-        self.assertEqual(safe_filename("1", "s1_img02", "很长很长的图片描述"), "s1_img02.png")
-
 
 if __name__ == "__main__":
     unittest.main()

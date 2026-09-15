@@ -7,6 +7,10 @@ from pathlib import Path
 from ..application.douyin_publisher import (
     DouyinPublishError,
     DouyinPublishRequest,
+    _find_publish_button,
+    _set_file_input,
+    _wait_for_publish_success,
+    _wait_for_upload_complete,
     discover_publish_assets,
     normalize_topics,
     publish_description,
@@ -14,6 +18,118 @@ from ..application.douyin_publisher import (
 
 
 class DouyinPublisherTest(unittest.TestCase):
+    def test_publish_button_requires_exact_accessible_name(self):
+        class FakeLocator:
+            @property
+            def first(self):
+                return self
+
+            def is_visible(self, timeout=None):
+                return True
+
+        class FakePage:
+            def get_by_role(self, role, *, name, exact):
+                self.lookup = (role, name, exact)
+                return FakeLocator()
+
+            def locator(self, _selector):
+                return FakeLocator()
+
+        page = FakePage()
+        self.assertIsNotNone(_find_publish_button(page, timeout_ms=100))
+        self.assertEqual(page.lookup, ("button", "发布", True))
+
+    def test_large_file_input_uses_direct_cdp_path(self):
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+                self.detached = False
+
+            def send(self, method, params):
+                self.calls.append((method, params))
+                if method == "DOM.getDocument":
+                    return {"root": {"nodeId": 1}}
+                if method == "DOM.querySelector":
+                    return {"nodeId": 2}
+                return {}
+
+            def detach(self):
+                self.detached = True
+
+        class FakeLocator:
+            def set_input_files(self, _path):
+                raise AssertionError("large files must bypass Playwright transfer")
+
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "large.mp4"
+            with video.open("wb") as file_obj:
+                file_obj.truncate(51 * 1024 * 1024)
+            session = FakeSession()
+            context = type("FakeContext", (), {"new_cdp_session": lambda self, page: session})()
+            page = type("FakePage", (), {"context": context})()
+
+            _set_file_input(page, FakeLocator(), video, selectors=('input[type="file"]',))
+
+        self.assertIn(
+            ("DOM.setFileInputFiles", {"nodeId": 2, "files": [str(video)]}),
+            session.calls,
+        )
+        self.assertTrue(session.detached)
+
+    def test_upload_wait_uses_douyin_completed_marker(self):
+        class FakeLocator:
+            def __init__(self, *, count=0, visible=False, enabled=True):
+                self._count = count
+                self._visible = visible
+                self._enabled = enabled
+
+            @property
+            def first(self):
+                return self
+
+            def count(self):
+                return self._count
+
+            def is_visible(self, timeout=None):
+                return self._visible
+
+            def is_enabled(self, timeout=None):
+                return self._enabled
+
+        class FakePage:
+            def evaluate(self, *_args):
+                return None
+
+            def get_by_role(self, role, *, name, exact):
+                self.test_case.assertEqual((role, name, exact), ("button", "发布", True))
+                return FakeLocator(visible=True)
+
+            def locator(self, selector):
+                if "重新上传" in selector:
+                    return FakeLocator(count=1)
+                return FakeLocator(visible="发布" in selector)
+
+        page = FakePage()
+        page.test_case = self
+        _wait_for_upload_complete(page, timeout_ms=1000)
+
+    def test_publish_wait_accepts_manage_page_url(self):
+        class FakeLocator:
+            @property
+            def first(self):
+                return self
+
+            def is_visible(self, timeout=None):
+                return False
+
+        class FakePage:
+            url = "https://creator.douyin.com/creator-micro/content/manage"
+
+            def locator(self, _selector):
+                return FakeLocator()
+
+        _wait_for_publish_success(FakePage(), timeout_ms=1000)
+
     def test_publish_request_normalizes_and_validates_video(self):
         with tempfile.TemporaryDirectory() as directory:
             video = Path(directory) / "clip.mp4"

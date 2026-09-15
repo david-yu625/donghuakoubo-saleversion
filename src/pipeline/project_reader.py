@@ -34,15 +34,63 @@ class ProjectSource:
 
 def load_project(project_dir: Path) -> ProjectSource:
     project_dir = project_dir.expanduser().resolve()
+    shots = read_shots(project_dir / "shot_timeline_source_time.csv")
     elements = read_elements(project_dir / "element_timeline_with_assets.csv")
+    validate_element_timing(elements, shots)
     copy_lines = read_copy_lines(project_dir / "wenan.txt")
     return ProjectSource(
         project_dir=project_dir,
         element_rows=assign_fallback_assets(elements, project_dir),
-        shot_rows=read_shots(project_dir / "shot_timeline_source_time.csv"),
+        shot_rows=shots,
         subtitle_rows=read_subtitles(project_dir / "timeline.csv", copy_lines),
         copy_lines=copy_lines,
     )
+
+
+def validate_element_timing(
+    elements: list[dict[str, str]],
+    shots: list[dict[str, str]],
+) -> None:
+    """Reject an element table generated for a different shot timeline.
+
+    Step 07 combines these two CSVs.  A stale element table otherwise fails much
+    later in the layout builder with an opaque out-of-range error.
+    """
+    shot_ranges: dict[str, tuple[int, int]] = {}
+    for shot in shots:
+        shot_id = (shot.get("shot_id") or "").strip()
+        try:
+            shot_ranges[shot_id] = (int(shot["开始时间ms"]), int(shot["结束时间ms"]))
+        except (KeyError, TypeError, ValueError):
+            # read_shots/build_scene_facts will report malformed shot data in
+            # its normal validation path.
+            continue
+
+    for row in elements:
+        shot_id = (row.get("shot_id") or "").strip()
+        element_id = (row.get("element_id") or "").strip()
+        if shot_id not in shot_ranges:
+            raise ValueError(
+                "element_timeline_with_assets.csv 与最新分镜不一致："
+                f"元素 {element_id or '<未知>'} 引用了不存在的 Shot {shot_id or '<空>'}。"
+                "请重新运行第05步（生图提示词）后再编译。"
+            )
+        try:
+            start_ms = int(row.get("start_ms", "") or 0)
+            end_ms = int(row.get("end_ms", "") or 0)
+        except (TypeError, ValueError):
+            raise ValueError(
+                "element_timeline_with_assets.csv 时间格式无效："
+                f"元素 {element_id or '<未知>'}。请重新运行第05步（生图提示词）后再编译。"
+            ) from None
+        shot_start, shot_end = shot_ranges[shot_id]
+        if start_ms < shot_start or end_ms > shot_end or end_ms <= start_ms:
+            raise ValueError(
+                "element_timeline_with_assets.csv 与最新分镜时间范围不一致："
+                f"Shot {shot_id} 元素 {element_id or '<未知>'} 为 {start_ms}-{end_ms}，"
+                f"当前分镜范围为 {shot_start}-{shot_end}。"
+                "请重新运行第05步（生图提示词）后再编译。"
+            )
 
 
 def read_copy_lines(path: Path) -> list[str]:
