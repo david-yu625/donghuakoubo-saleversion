@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import ANY, patch
@@ -70,6 +71,27 @@ class QtWorkspaceTest(unittest.TestCase):
         self.assertFalse(self.window.continue_button.isHidden())
         self.assertFalse(self.window.start_button.isHidden())
 
+    def test_publish_uses_one_button_with_optional_auto_click(self):
+        self.assertIsNotNone(self.window.douyin_publish_button)
+        self.assertIsNotNone(self.window.douyin_auto_publish_checkbox)
+        self.assertTrue(self.window.douyin_auto_publish_checkbox.isChecked())
+        self.window.douyin_auto_publish_checkbox.setChecked(False)
+        self.assertFalse(self.window.douyin_auto_publish_checkbox.isChecked())
+
+    def test_manual_metadata_does_not_trigger_generation_again_when_title_equals_topic(self):
+        with tempfile.NamedTemporaryFile(suffix=".mp4") as video:
+            self.window.douyin_video_input.setText(video.name)
+            self.window.douyin_title_input.setText(self.window.inputs["topic"].text())
+            self.window.douyin_topics_input.setText("#电脑技巧")
+            with (
+                patch.object(self.window, "scan_publish_assets"),
+                patch.object(self.window, "generate_douyin_metadata") as generate,
+            ):
+                request = self.window._douyin_publish_request_or_start_metadata()
+
+            self.assertIsNotNone(request)
+            generate.assert_not_called()
+
     def test_changing_topic_clears_publish_assets_from_previous_topic(self):
         self.window.douyin_video_input.setText("/tmp/old-topic.mp4")
         self.window.douyin_cover_input.setText("/tmp/old-topic.png")
@@ -100,9 +122,15 @@ class QtWorkspaceTest(unittest.TestCase):
         self.window.context_input.setPlainText("补充要求")
         self.window.batch_topics.setPlainText("用户自己填写的批量主题")
 
+        def generate_topics(*args, **kwargs):
+            self.assertFalse(self.window.batch_topic_generate_button.isEnabled())
+            self.assertFalse(self.window.topic_catalog_button.isEnabled())
+            self.assertFalse(self.window.archive_topic_button.isEnabled())
+            return ["主题一", "主题二", "主题三"]
+
         with (
             patch("src.qt_app.QInputDialog.getInt", return_value=(3, True)),
-            patch("src.qt_app.generate_unique_topics", return_value=["主题一", "主题二", "主题三"]) as generate,
+            patch("src.qt_app.generate_unique_topics", side_effect=generate_topics) as generate,
             patch("src.qt_app.threading.Thread", ImmediateThread),
             patch("src.qt_app.QMessageBox.information") as information,
         ):
@@ -119,6 +147,9 @@ class QtWorkspaceTest(unittest.TestCase):
         self.assertIn("批量生成主题开始：计划生成 3 个主题", self.window.log.toPlainText())
         self.assertIn("批量生成主题完成：新增 3 个主题", self.window.log.toPlainText())
         self.assertEqual(self.window.batch_topics.toPlainText(), "用户自己填写的批量主题")
+        self.assertTrue(self.window.batch_topic_generate_button.isEnabled())
+        self.assertTrue(self.window.topic_catalog_button.isEnabled())
+        self.assertTrue(self.window.archive_topic_button.isEnabled())
 
 
 if __name__ == "__main__":

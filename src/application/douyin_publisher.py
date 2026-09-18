@@ -11,6 +11,7 @@ Douyin uploader, while this module keeps the project's Playwright/profile API.
 from __future__ import annotations
 
 import os
+import json
 import re
 import socket
 import subprocess
@@ -20,6 +21,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from openai import OpenAI
+
+from ..env import load_env_file
 from ..paths import VIDEO_EXPORT_VARIANTS, safe_topic, video_export_path
 
 
@@ -84,6 +88,63 @@ def normalize_topics(value: str | Iterable[str]) -> tuple[str, ...]:
                 seen.add(normalized.casefold())
                 result.append(normalized)
     return tuple(result)
+
+
+def generate_publish_metadata(
+    topic: str,
+    *,
+    context: str = "",
+    api_key: str = "",
+    model: str = "",
+    base_url: str = "",
+) -> tuple[str, tuple[str, ...]]:
+    """Generate a publish title and relevant, traffic-friendly topic tags."""
+    load_env_file(Path(__file__).resolve().parents[2] / ".env")
+    topic = topic.strip()
+    if not topic:
+        raise DouyinPublishError("当前主题为空，无法生成发布信息")
+    key = (api_key or os.getenv("DEEPSEEK_API_KEY", "")).strip()
+    if not key:
+        raise DouyinPublishError("缺少 DEEPSEEK_API_KEY，无法生成标题和话题")
+    client = OpenAI(
+        api_key=key,
+        base_url=(base_url or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")).strip(),
+    )
+    model_name = (model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")).strip()
+    context = context.strip()[:6000]
+    prompt = (
+        "你负责短视频发布信息策划。根据主题和文案，生成一个适合抖音的作品标题和话题标签。\n"
+        "标题要求：准确、具体、有吸引力，不虚构事实，不超过30个汉字，不带#号。\n"
+        "话题要求：生成3到5个标签，必须与作品内容直接相关；优先选择当前平台常见、具有流量潜力的热点方向标签，"
+        "但不要编造无法确认的实时热搜事件，不要使用与作品无关的泛流量词。\n"
+        "只输出严格JSON：{\"title\":\"...\",\"topics\":[\"标签1\",\"标签2\"]}\n\n"
+        f"主题：{topic}\n"
+        f"文案或补充上下文：{context or '（无）'}"
+    )
+    try:
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": "你是抖音科普账号的标题和话题编辑。"},
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=500,
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        start, end = raw.find("{"), raw.rfind("}")
+        payload = json.loads(raw[start : end + 1] if start >= 0 and end > start else raw)
+    except Exception as exc:
+        raise DouyinPublishError(f"标题和话题生成失败：{exc}") from exc
+    title = str(payload.get("title", "")).strip()
+    if not title:
+        raise DouyinPublishError("模型没有返回有效的作品标题")
+    if len(title) > 30:
+        title = title[:30]
+    topics = normalize_topics(payload.get("topics", []))
+    if not topics:
+        raise DouyinPublishError("模型没有返回有效的话题")
+    return title, topics[:5]
 
 
 def publish_description(request: DouyinPublishRequest) -> str:
@@ -332,9 +393,7 @@ def _fill_title(page, title: str) -> None:
     title_input.fill(title)
 
 
-def _fill_description(page, description: str) -> None:
-    if not description:
-        return
+def _fill_description(page, description: str, topics: Iterable[str] = ()) -> None:
     description_input = _first_visible(
         page,
         (
@@ -346,7 +405,27 @@ def _fill_description(page, description: str) -> None:
     )
     if description_input is None:
         raise DouyinPublishError("没有找到抖音描述输入框")
-    description_input.fill(description)
+    description_input.click()
+    try:
+        description_input.press("Control+A")
+    except Exception:
+        description_input.press("Meta+A")
+    description_input.press("Backspace")
+    if description.strip():
+        description_input.type(description.strip())
+    # Desktop creator center does not expose the mobile app's separate topic
+    # row. Typing each hashtag and committing it with Space lets Douyin turn
+    # it into an actual topic token instead of leaving plain text in the body.
+    for topic in topics:
+        token = str(topic).strip()
+        if not token:
+            continue
+        description_input.type(f" {token}")
+        description_input.press("Space")
+    try:
+        description_input.press("Escape")
+    except Exception:
+        pass
 
 
 def _remove_blocking_overlays(page) -> None:
@@ -360,6 +439,12 @@ def _remove_blocking_overlays(page) -> None:
     except Exception:
         # Overlay cleanup is best effort; older page revisions may reject evaluate.
         pass
+
+
+def _cover_is_portrait(cover_path: Path) -> bool:
+    """Infer the intended cover orientation from generated ``WxH`` filenames."""
+    match = re.search(r"(\d+)x(\d+)", cover_path.stem)
+    return bool(match and int(match.group(2)) > int(match.group(1)))
 
 
 def _find_video_upload_input(page, timeout_ms: int = 60000):
@@ -431,6 +516,7 @@ def _set_file_input(page, locator, file_path: Path, *, selectors: tuple[str, ...
 def _upload_cover(page, cover_path: Path) -> None:
     """Open Douyin's cover picker and upload an image using vendor-tested fallbacks."""
     _remove_blocking_overlays(page)
+    prefer_portrait = _cover_is_portrait(cover_path)
     cover_area = page.locator('[class*="cover-"]').filter(has=page.locator("img")).first
     if cover_area.count() == 0:
         cover_area = page.locator('[class*="cover"]').first
@@ -477,6 +563,16 @@ def _upload_cover(page, cover_path: Path) -> None:
         raise DouyinPublishError("抖音封面设置窗口未打开")
 
     assert modal is not None
+    # The creator center may open on the horizontal tab even for a portrait
+    # asset. Select the intended tab before sending the file.
+    orientation_tab = "设置竖封面" if prefer_portrait else "设置横封面"
+    try:
+        tab = modal.get_by_text(orientation_tab, exact=True).first
+        if tab.count() and tab.is_visible(timeout=500):
+            tab.click(timeout=5000)
+            page.wait_for_timeout(500)
+    except Exception:
+        pass
     upload = modal.locator(
         '.semi-upload:has(.semi-upload-drag-area-main-text) input[type="file"]'
     ).first
@@ -485,7 +581,7 @@ def _upload_cover(page, cover_path: Path) -> None:
     if upload.count() == 0:
         raise DouyinPublishError("没有找到抖音封面图片上传控件")
     _set_file_input(page, upload, cover_path, selectors=('input[type="file"]',))
-    _dismiss_horizontal_cover_prompt(page)
+    _handle_cover_orientation_prompt(page, prefer_portrait)
 
     confirm = None
     for selector in ('button:has-text("完成")', 'button:has-text("确定")', 'button:has-text("保存")'):
@@ -513,12 +609,14 @@ def _upload_cover(page, cover_path: Path) -> None:
         page.wait_for_timeout(300)
     if not enabled:
         raise DouyinPublishError("抖音封面处理超时，请检查图片尺寸或重新生成封面")
-    _dismiss_horizontal_cover_prompt(page, timeout_ms=1500)
+    _handle_cover_orientation_prompt(page, prefer_portrait, timeout_ms=3000)
     confirm.click()
     try:
         modal.wait_for(state="hidden", timeout=10000)
     except Exception:
-        # A second confirmation is shown by some page revisions.
+        # Some revisions show the orientation recommendation after clicking
+        # "完成". Resolve it before looking for a generic second confirmation.
+        _handle_cover_orientation_prompt(page, prefer_portrait, timeout_ms=5000)
         second = _first_visible(page, ('button:has-text("确定")', 'button:has-text("继续")'), timeout_ms=2000)
         if second is not None:
             second.click()
@@ -528,26 +626,29 @@ def _upload_cover(page, cover_path: Path) -> None:
                 pass
 
 
-def _dismiss_horizontal_cover_prompt(page, timeout_ms: int = 5000) -> bool:
-    """Dismiss Douyin's optional horizontal-cover traffic recommendation."""
-    prompt_markers = (
-        "设置横封面获得更多流量",
-        "设置横封面",
-    )
+def _handle_cover_orientation_prompt(page, prefer_portrait: bool, timeout_ms: int = 5000) -> bool:
+    """Resolve Douyin's post-cover orientation recommendation.
+
+    The dialog is a real modal overlay. Leaving it open makes the final
+    publish button visible but not clickable, which surfaces as a Playwright
+    pointer-interception timeout.
+    """
+    markers = ("设置竖封面获得更多流量", "设置横封面获得更多流量")
+    action_text = "设置竖封面" if prefer_portrait else "暂不设置"
     deadline = time.monotonic() + timeout_ms / 1000
     while time.monotonic() < deadline:
-        for marker in prompt_markers:
+        for marker in markers:
             try:
-                prompt = page.locator(".semi-modal-content").filter(has_text=marker).last
+                prompt = page.locator(
+                    ".dy-creator-content-modal-wrap, .semi-modal-content, .semi-modal-body"
+                ).filter(has_text=marker).last
                 if not prompt.is_visible(timeout=300):
                     continue
-                skip = prompt.locator('button:has-text("暂不设置")').first
-                if skip.count() == 0:
-                    skip = page.get_by_role("button", name="暂不设置").last
-                if skip.count() == 0:
-                    skip = page.get_by_text("暂不设置", exact=True).last
-                if skip.count() and skip.is_visible(timeout=500):
-                    skip.click(timeout=5000)
+                action = prompt.get_by_role("button", name=action_text, exact=True).last
+                if action.count() == 0:
+                    action = prompt.get_by_text(action_text, exact=True).last
+                if action.count() and action.is_visible(timeout=500):
+                    action.click(timeout=5000)
                     try:
                         prompt.wait_for(state="hidden", timeout=5000)
                     except Exception:
@@ -557,6 +658,11 @@ def _dismiss_horizontal_cover_prompt(page, timeout_ms: int = 5000) -> bool:
                 continue
         page.wait_for_timeout(200)
     return False
+
+
+def _dismiss_horizontal_cover_prompt(page, timeout_ms: int = 5000) -> bool:
+    """Backward-compatible wrapper for callers that only want to skip it."""
+    return _handle_cover_orientation_prompt(page, prefer_portrait=False, timeout_ms=timeout_ms)
 
 
 def _wait_for_upload_complete(page, timeout_ms: int) -> None:
@@ -589,49 +695,104 @@ def _wait_for_upload_complete(page, timeout_ms: int) -> None:
     raise DouyinPublishError("视频上传或处理超时，请检查抖音页面状态")
 
 
-def _set_ai_declaration(page) -> bool:
-    """Best-effort selection of Douyin's ``内容由AI生成`` declaration."""
-    _remove_blocking_overlays(page)
-    entry = _first_visible(
-        page,
-        (
-            'text="请选择自主声明"',
-            'text="请选择声明类型"',
-            'text="添加自主声明"',
-            'text="自主声明"',
-            'text="作品声明"',
-        ),
-        timeout_ms=3000,
-    )
-    if entry is None:
-        return False
+def _switch_state(control) -> bool | None:
+    """Read a checkbox/switch state without assuming one Douyin DOM version."""
     try:
-        entry.click(timeout=5000)
-        dialog = None
-        for selector in (".semi-modal-content", ".semi-modal-body"):
-            candidate = page.locator(selector).filter(has_text="请选择声明类型").first
+        return bool(control.is_checked(timeout=500))
+    except Exception:
+        pass
+    try:
+        aria_checked = (control.get_attribute("aria-checked", timeout=500) or "").casefold()
+        if aria_checked in {"true", "false"}:
+            return aria_checked == "true"
+    except Exception:
+        pass
+    try:
+        class_name = control.get_attribute("class", timeout=500) or ""
+        if "semi-switch" in class_name:
+            return "semi-switch-checked" in class_name
+    except Exception:
+        pass
+    return None
+
+
+def _disable_download(page) -> bool:
+    """Disable downloads and fail unless the off state can be confirmed."""
+    _remove_blocking_overlays(page)
+    label_selectors = tuple(
+        f'text="{text}"'
+        for text in (
+            "允许下载",
+            "允许他人下载",
+            "允许下载该视频",
+            "允许保存",
+            "允许他人保存",
+            "允许他人保存视频",
+        )
+    )
+    control_selector = (
+        'input[type="checkbox"], input.semi-switch-native-control, '
+        '[role="switch"], .semi-switch'
+    )
+    found_label = False
+    found_control = False
+    for label_selector in label_selectors:
+        label = _first_visible(page, (label_selector,), timeout_ms=600)
+        if label is None:
+            continue
+        found_label = True
+        containers = [label]
+        containers.extend(
+            label.locator("xpath=" + "/".join([".."] * depth))
+            for depth in range(1, 6)
+        )
+        try:
+            label_for = label.get_attribute("for", timeout=500)
+            if label_for:
+                escaped_id = label_for.replace('"', '\\"')
+                containers.insert(0, page.locator(f'[id="{escaped_id}"]'))
+        except Exception:
+            pass
+
+        for container in containers:
             try:
-                candidate.wait_for(state="visible", timeout=1500)
-                dialog = candidate
-                break
+                controls = container.locator(control_selector)
+                count = controls.count()
             except Exception:
                 continue
-        if dialog is None:
-            return False
-        option = dialog.locator("label.semi-radio").filter(has_text="内容由AI生成").first
-        if option.count() == 0:
-            option = dialog.get_by_text("内容由AI生成", exact=True).first
-        if option.count() == 0:
-            return False
-        option.click(timeout=5000)
-        confirm = dialog.get_by_role("button", name="确定").first
-        if confirm.count() == 0:
-            confirm = page.get_by_role("button", name="确定").first
-        if confirm.count():
-            confirm.click(timeout=5000)
-        return True
-    except Exception:
-        return False
+            for index in range(count):
+                control = controls.nth(index)
+                state = _switch_state(control)
+                if state is None:
+                    continue
+                found_control = True
+                if not state:
+                    return True
+
+                click_target = control
+                try:
+                    switch_root = control.locator(
+                        "xpath=ancestor::*[contains(concat(' ', normalize-space(@class), ' '), ' semi-switch ')][1]"
+                    )
+                    if switch_root.count():
+                        click_target = switch_root
+                except Exception:
+                    pass
+                try:
+                    click_target.click(timeout=5000)
+                except Exception as exc:
+                    raise DouyinPublishError(f"无法关闭“允许下载”：{exc}") from exc
+
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if _switch_state(control) is False:
+                        return True
+                    page.wait_for_timeout(100)
+                raise DouyinPublishError("已操作“允许下载”开关，但未能确认它已关闭，已停止发布")
+
+    if found_label and not found_control:
+        raise DouyinPublishError("找到了“允许下载/保存”设置，但无法确认开关状态，已停止发布")
+    raise DouyinPublishError("没有找到“允许下载/保存”设置，为避免可下载发布，已停止发布")
 
 
 def _wait_for_publish_success(page, timeout_ms: int) -> None:
@@ -740,8 +901,17 @@ def _discard_unfinished_draft(page, timeout_ms: int = 3000) -> bool:
     return True
 
 
-def publish_to_douyin(request: DouyinPublishRequest, *, timeout_ms: int = 120000) -> None:
-    """Upload, fill metadata, and click publish in a visible browser window."""
+def publish_to_douyin(
+    request: DouyinPublishRequest,
+    *,
+    timeout_ms: int = 120000,
+    auto_click: bool = True,
+) -> None:
+    """Upload and fill a Douyin post, optionally clicking the final publish button.
+
+    Manual mode uses the dedicated remote-debug browser so the page remains
+    open after this worker returns and the user can review and click 发布.
+    """
     request = request.validated()
     sync_playwright = _load_playwright()
     profile = douyin_browser_profile_dir()
@@ -758,6 +928,21 @@ def publish_to_douyin(request: DouyinPublishRequest, *, timeout_ms: int = 120000
                     context = browser.contexts[0] if browser.contexts else browser.new_context()
         except Exception:
             context = None
+        if context is None and not auto_click:
+            # Manual mode must leave a real browser window open. Start the
+            # project's dedicated Chrome profile when the user has not opened
+            # it through 登录/检查抖音 yet, then attach over CDP.
+            open_douyin_upload_page()
+            endpoint = _saved_debug_endpoint(profile)
+            if endpoint is not None and _wait_for_debug_endpoint(endpoint, timeout_ms=min(timeout_ms, 30000)):
+                try:
+                    browser = playwright.chromium.connect_over_cdp(endpoint, timeout=5000)
+                    connected_over_cdp = True
+                    context = browser.contexts[0] if browser.contexts else browser.new_context()
+                except Exception:
+                    context = None
+            if context is None:
+                raise DouyinPublishError("无法连接专用浏览器，手动发布请先点击“登录/检查抖音”打开浏览器")
         if context is None:
             try:
                 executable = next((path for path in _chrome_candidates() if path.is_file()), None)
@@ -796,17 +981,19 @@ def publish_to_douyin(request: DouyinPublishRequest, *, timeout_ms: int = 120000
             except Exception:
                 pass
             _fill_title(page, request.title)
-            _fill_description(page, publish_description(request))
+            _fill_description(page, request.description, request.topics)
             _wait_for_upload_complete(page, timeout_ms)
-            _set_ai_declaration(page)
             if request.cover_path is not None:
                 _upload_cover(page, request.cover_path)
+            _disable_download(page)
             _remove_blocking_overlays(page)
             publish_button = _find_publish_button(page, timeout_ms=15000)
             if publish_button is None:
                 raise DouyinPublishError("没有找到抖音发布按钮，请检查账号登录状态和页面版本")
             if _verification_required(page):
                 raise DouyinPublishError("抖音要求短信验证，请在专用浏览器中完成验证后重新点击发布")
+            if not auto_click:
+                return
             publish_button.click()
             _wait_for_publish_success(page, timeout_ms)
         except Exception as exc:
@@ -816,3 +1003,8 @@ def publish_to_douyin(request: DouyinPublishRequest, *, timeout_ms: int = 120000
         finally:
             if not connected_over_cdp:
                 context.close()
+
+
+def prepare_douyin_publish(request: DouyinPublishRequest, *, timeout_ms: int = 120000) -> None:
+    """Prepare a Douyin post and leave the final 发布 click to the user."""
+    publish_to_douyin(request, timeout_ms=timeout_ms, auto_click=False)

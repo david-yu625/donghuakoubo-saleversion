@@ -3,11 +3,16 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from ..application.douyin_publisher import (
     DouyinPublishError,
     DouyinPublishRequest,
+    _cover_is_portrait,
+    _disable_download,
+    _fill_description,
     _find_publish_button,
+    generate_publish_metadata,
     _set_file_input,
     _wait_for_publish_success,
     _wait_for_upload_complete,
@@ -18,6 +23,157 @@ from ..application.douyin_publisher import (
 
 
 class DouyinPublisherTest(unittest.TestCase):
+    def test_disable_download_turns_checked_switch_off(self):
+        class FakeControl:
+            def __init__(self):
+                self.checked = True
+                self.clicks = 0
+
+            def is_checked(self, timeout=None):
+                return self.checked
+
+            def locator(self, _selector):
+                return FakeCollection([])
+
+            def click(self, timeout=None):
+                self.clicks += 1
+                self.checked = False
+
+        class FakeCollection:
+            def __init__(self, items):
+                self.items = items
+
+            def count(self):
+                return len(self.items)
+
+            def nth(self, index):
+                return self.items[index]
+
+        class FakeLabel:
+            def __init__(self, control):
+                self.control = control
+
+            def get_attribute(self, name, timeout=None):
+                return None
+
+            def locator(self, selector):
+                if selector.startswith("xpath="):
+                    return FakeContainer(self.control)
+                return FakeCollection([])
+
+        class FakeContainer:
+            def __init__(self, control):
+                self.control = control
+
+            def locator(self, selector):
+                if "checkbox" in selector:
+                    return FakeCollection([self.control])
+                return FakeCollection([])
+
+        control = FakeControl()
+        label = FakeLabel(control)
+        page = type(
+            "FakePage",
+            (),
+            {
+                "evaluate": lambda self, *_args: None,
+                "locator": lambda self, selector: FakeContainer(control),
+                "wait_for_timeout": lambda self, _timeout: None,
+            },
+        )()
+        with patch("src.application.douyin_publisher._first_visible", side_effect=[label] + [None] * 5):
+            self.assertTrue(_disable_download(page))
+        self.assertEqual(control.clicks, 1)
+
+    def test_disable_download_keeps_unchecked_switch_off(self):
+        control = type(
+            "FakeControl",
+            (),
+            {
+                "is_checked": lambda self, timeout=None: False,
+                "click": lambda self, timeout=None: self.fail("should not click"),
+            },
+        )()
+        controls = type("Controls", (), {"count": lambda self: 1, "nth": lambda self, index: control})()
+        container = type("Container", (), {"locator": lambda self, selector: controls})()
+        label = type(
+            "Label",
+            (),
+            {
+                "get_attribute": lambda self, name, timeout=None: None,
+                "locator": lambda self, selector: container,
+            },
+        )()
+        page = type("FakePage", (), {"evaluate": lambda self, *_args: None})()
+        with patch("src.application.douyin_publisher._first_visible", return_value=label):
+            self.assertTrue(_disable_download(page))
+
+    def test_disable_download_rejects_unverifiable_page(self):
+        page = type("FakePage", (), {"evaluate": lambda self, *_args: None})()
+        with patch("src.application.douyin_publisher._first_visible", return_value=None):
+            with self.assertRaisesRegex(DouyinPublishError, "没有找到"):
+                _disable_download(page)
+
+    def test_fill_description_commits_topics_as_hashtag_tokens(self):
+        class FakeLocator:
+            def __init__(self):
+                self.calls = []
+
+            @property
+            def first(self):
+                return self
+
+            def is_visible(self, timeout=None):
+                return True
+
+            def click(self):
+                self.calls.append(("click",))
+
+            def press(self, value):
+                self.calls.append(("press", value))
+
+            def type(self, value):
+                self.calls.append(("type", value))
+
+        locator = FakeLocator()
+
+        class FakePage:
+            def locator(self, _selector):
+                return locator
+
+        _fill_description(FakePage(), "正文内容", ("#人工智能", "#电脑技巧"))
+
+        self.assertIn(("type", "正文内容"), locator.calls)
+        self.assertIn(("type", " #人工智能"), locator.calls)
+        self.assertIn(("press", "Space"), locator.calls)
+        self.assertIn(("type", " #电脑技巧"), locator.calls)
+
+    def test_generate_publish_metadata_normalizes_model_topics(self):
+        response = type(
+            "Response",
+            (),
+            {
+                "choices": [
+                    type(
+                        "Choice",
+                        (),
+                        {"message": type("Message", (), {"content": '{"title":"为什么电脑会变慢？","topics":["电脑技巧","#效率提升","电脑技巧"]}'})()},
+                    )
+                ]
+            },
+        )()
+        with patch("src.application.douyin_publisher.OpenAI") as client_factory:
+            client_factory.return_value.chat.completions.create.return_value = response
+            title, topics = generate_publish_metadata("电脑为什么会变慢", api_key="test-key")
+
+        self.assertEqual(title, "为什么电脑会变慢？")
+        self.assertEqual(topics, ("#电脑技巧", "#效率提升"))
+
+    def test_cover_orientation_follows_generated_dimensions(self):
+        self.assertTrue(_cover_is_portrait(Path("主题_cover_1080x1920.png")))
+        self.assertFalse(_cover_is_portrait(Path("主题_cover_1920x1080.png")))
+        self.assertFalse(_cover_is_portrait(Path("cover.png")))
+
     def test_publish_button_requires_exact_accessible_name(self):
         class FakeLocator:
             @property

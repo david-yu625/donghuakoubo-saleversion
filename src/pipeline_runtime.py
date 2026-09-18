@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .core.models import orientation_key
-from .paths import default_draft_folder, resolve_draft_folder, safe_topic
+from .paths import default_draft_folder, resolve_draft_folder, safe_topic, video_export_path
 from .prepare.image_generation import (
     DEFAULT_IMAGE_BASE_URL,
     DEFAULT_IMAGE_MODEL,
@@ -177,6 +177,8 @@ class Options:
     include_background: bool = True
     include_title: bool = True
     include_subtitles: bool = True
+    render_mode: str = "jianying"
+    render_stage: str = "all"
 
 
 class Runner:
@@ -725,23 +727,48 @@ def build_commands(options: Options) -> tuple[list[tuple[str, list[str]]], Path]
             image_command.append("--overwrite")
         commands.append(("06 图片", image_command))
     if options.run_layout:
-        layout_command = [
-            py,
-            "-m",
-            "src.07_compile_layout",
-            str(topic_dir),
-            "--title",
-            topic,
-            "--theme",
-            visual_theme.key,
-            "--orientation",
-            options.orientation,
-            "--output",
-            str(layout_json),
-        ]
-        layout_command.append("--subtitles" if options.include_subtitles else "--no-subtitles")
-        commands.append(("07 布局", layout_command))
+        if options.render_mode != "infinite_canvas":
+            layout_command = [
+                py,
+                "-m",
+                "src.07_compile_layout",
+                str(topic_dir),
+                "--title",
+                topic,
+                "--theme",
+                visual_theme.key,
+                "--orientation",
+                options.orientation,
+                "--output",
+                str(layout_json),
+            ]
+            layout_command.append("--subtitles" if options.include_subtitles else "--no-subtitles")
+            commands.append(("07 布局", layout_command))
     if options.run_draft:
+        if options.render_mode == "infinite_canvas":
+            if orientation_key(options.orientation) != "landscape":
+                raise ValueError("无限画布效果目前只支持横版成片")
+            stage_commands = {
+                "prepare": "07 无限画布素材",
+                "plan": "08 无限画布规划",
+                "frames": "09 无限画布渲染",
+                "encode": "10 无限画布编码",
+            }
+            stages = tuple(stage_commands) if options.render_stage == "all" else (options.render_stage,)
+            for stage in stages:
+                commands.append((stage_commands[stage], [
+                    py,
+                    "-m",
+                    "src.commands.render_infinite_canvas",
+                    str(topic_dir),
+                    "--title",
+                    topic,
+                    "--output",
+                    str(video_export_path(OUTPUT_ROOT, topic, "landscape")),
+                    "--stage",
+                    stage,
+                ]))
+            return commands, topic_dir
         background_image = None
         if options.include_background:
             background_image = resolve_project_file_path(

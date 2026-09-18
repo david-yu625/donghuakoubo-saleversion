@@ -229,6 +229,58 @@ class GuiPipelineTest(unittest.TestCase):
         ))
         self.assertNotIn("06 图片", [label for label, _ in commands])
 
+    def test_infinite_canvas_reuses_shared_steps_and_writes_standard_landscape_video(self):
+        commands, output_dir = build_commands(Options(
+            topic="测试主题",
+            story_world="",
+            target_chars="0",
+            orientation="横屏",
+            render_mode="infinite_canvas",
+        ))
+        labels = [label for label, _ in commands]
+        self.assertEqual(labels[-4:], [
+            "07 无限画布素材",
+            "08 无限画布规划",
+            "09 无限画布渲染",
+            "10 无限画布编码",
+        ])
+        self.assertNotIn("08 草稿", labels)
+        render_command = commands[-1][1]
+        self.assertIn("src.commands.render_infinite_canvas", render_command)
+        self.assertEqual(
+            render_command[render_command.index("--output") + 1],
+            str(output_dir / "测试主题_landscape.mp4"),
+        )
+
+    def test_infinite_canvas_rejects_portrait_orientation(self):
+        with self.assertRaisesRegex(ValueError, "只支持横版"):
+            build_commands(Options(
+                topic="测试主题",
+                story_world="",
+                target_chars="0",
+                orientation="竖屏",
+                render_mode="infinite_canvas",
+            ))
+
+    def test_infinite_canvas_stage_runs_only_selected_renderer_stage(self):
+        commands, _ = build_commands(Options(
+            topic="测试主题",
+            story_world="",
+            target_chars="0",
+            orientation="横屏",
+            render_mode="infinite_canvas",
+            render_stage="plan",
+            run_copy=False,
+            run_voice=False,
+            run_shots=False,
+            run_storyboard_prompts=False,
+            run_prompts=False,
+            run_images=False,
+            run_layout=False,
+        ))
+        self.assertEqual([label for label, _ in commands], ["08 无限画布规划"])
+        self.assertEqual(commands[0][1][commands[0][1].index("--stage") + 1], "plan")
+
     def test_direct_landscape_video_omits_title_but_keeps_subtitles(self):
         commands, _ = build_commands(Options(
             topic="Topic",

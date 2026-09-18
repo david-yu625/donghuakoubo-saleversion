@@ -198,24 +198,34 @@ class TopicGenerationTest(unittest.TestCase):
 
     def test_generate_unique_topics_builds_requested_batch(self):
         progress: list[str] = []
-        with patch(
-            "src.prepare.topic_generation.generate_unique_topic",
-            side_effect=["主题一", "主题二", "主题三"],
-        ) as generate:
+        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=(
+            '{"candidates":['
+            '{"topic":"Windows 内存占用过高怎么排查","audience":"Windows 用户","scenario":"电脑变慢","problem":"判断内存占用","action":"检查进程","reason":"实用","score":9},'
+            '{"topic":"电脑休眠后网络断开如何处理","audience":"笔记本用户","scenario":"休眠唤醒","problem":"网络断开","action":"检查电源设置","reason":"常见问题","score":8},'
+            '{"topic":"磁盘空间不足时哪些文件可以清理","audience":"普通用户","scenario":"系统盘满","problem":"安全清理","action":"按类型清理","reason":"降低误删风险","score":7}'
+            ']}')))])
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=Mock(return_value=response))))
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "src.prepare.topic_generation.OpenAI", return_value=client
+        ):
+            root = Path(directory)
             self.assertEqual(
                 generate_unique_topics(
                     3,
                     direction="计算机操作系统",
+                    api_key="key",
+                    output_root=root,
                     progress_callback=progress.append,
                 ),
-                ["主题一", "主题二", "主题三"],
+                [
+                    "Windows 内存占用过高怎么排查",
+                    "电脑休眠后网络断开如何处理",
+                    "磁盘空间不足时哪些文件可以清理",
+                ],
             )
-            self.assertEqual(
-                [call.kwargs["direction"] for call in generate.call_args_list],
-                ["计算机操作系统"] * 3,
-            )
-            self.assertEqual(progress[0], "正在生成第 1/3 个主题...")
-            self.assertIn("第 3/3 个主题生成完成：主题三", progress)
+            self.assertEqual(client.chat.completions.create.call_count, 1)
+            self.assertIn("一次模型请求", progress[0])
+            self.assertIn("已生成 3 个主题", progress[-1])
         with self.assertRaisesRegex(ValueError, "1 到 30"):
             generate_unique_topics(31)
 

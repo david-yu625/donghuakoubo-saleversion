@@ -35,7 +35,7 @@ TOPIC_SYSTEM_PROMPT = """
 
 输出前请在内部自检：这个主题面向谁、会在什么具体场景遇到什么问题、看完后能采取什么行动。任一项说不清就重新选题，不要输出自检过程。
 
-请先提出 6 个候选主题，再在内部比较它们的实用性、方向匹配度、可讲清程度、可操作性和与历史主题的差异度，按综合评分从高到低输出。
+请按用户要求的数量提出候选主题，再在内部比较它们的实用性、方向匹配度、可讲清程度、可操作性和与历史主题的差异度，按综合评分从高到低输出。
 每个候选必须包含：topic（标题）、audience（目标用户）、scenario（具体场景）、problem（要解决的问题）、action（用户看完后能采取的行动）、reason（推荐理由）、score（1 到 10 的整数）。
 只输出严格 JSON：{"candidates":[{"topic":"一个具体主题","audience":"目标用户","scenario":"具体场景","problem":"核心问题","action":"可执行行动","reason":"推荐理由","score":9}]}
 """.strip()
@@ -401,22 +401,117 @@ def generate_unique_topic(
 def generate_unique_topics(
     count: int,
     *,
+    direction: str = "",
+    context: str = "",
+    api_key: str = "",
+    model: str = DEFAULT_MODEL,
+    base_url: str = DEFAULT_BASE_URL,
+    output_root: Path = OUTPUT_ROOT,
+    history_path: Path | None = None,
+    topic_list_path: Path | None = None,
+    current_topic: str = "",
     progress_callback: Callable[[str], None] | None = None,
-    **kwargs,
 ) -> list[str]:
+    """Generate a complete topic batch with exactly one model request."""
     if count < 1 or count > 30:
         raise ValueError("批量主题数量必须在 1 到 30 之间")
+    load_env_file(PROJECT_ROOT / ".env")
+    direction = direction.strip()
+    context = context.strip()
+    current_topic = current_topic.strip()
+    if len(direction) > 200:
+        raise ValueError("选题方向不能超过 200 个字符")
+    if len(context) > 1200:
+        raise ValueError("选题上下文不能超过 1200 个字符")
+    key = api_key or os.getenv("DEEPSEEK_API_KEY", "")
+    if not key:
+        raise ValueError("缺少 DEEPSEEK_API_KEY")
+
+    used = load_used_topics(
+        output_root=output_root,
+        history_path=history_path,
+        topic_list_path=topic_list_path,
+        current_topic=current_topic,
+    )
+    if topic_list_path is None:
+        topic_list_path = TOPIC_LIST_PATH if output_root.resolve() == OUTPUT_ROOT.resolve() else None
+    _, discouraged = load_topic_catalog(topic_list_path) if topic_list_path is not None else ([], [])
+    history = "\n".join(f"- {topic}" for topic in used[-300:]) or "（暂无历史主题）"
+    candidate_count = min(40, count + max(4, count // 3))
+    direction_prompt = (
+        f"用户指定的选题大方向是：{direction}\n"
+        "所有主题都必须直接属于这个方向，并下钻到不同的具体问题、机制、操作细节、判断方法、常见误区或失败原因。\n\n"
+        if direction
+        else "优先选择计算机或科技领域中能讲清具体机制、真实场景和判断方法的问题。\n\n"
+    )
+    context_prompt = (
+        f"用户补充的上下文/行文思路是：{context}\n"
+        "上下文中的术语、隐喻和限定条件必须优先遵守。\n\n"
+        if context
+        else "用户没有补充上下文，默认面向普通电脑和科技产品用户。\n\n"
+    )
+    current_topic_prompt = (
+        f"当前编辑中的主题是：{current_topic}\n新主题不能复述它。\n\n"
+        if current_topic
+        else ""
+    )
+    discouraged_prompt = (
+        "以下主题被标记为[感觉一般]，不要生成它们的近似换皮主题：\n"
+        + "\n".join(f"- {topic}" for topic in discouraged)
+        + "\n\n"
+        if discouraged
+        else ""
+    )
+    user_prompt = (
+        direction_prompt
+        + context_prompt
+        + current_topic_prompt
+        + f"这是一次批量生成请求。最终需要 {count} 个互不相似的主题。"
+        f"为给本地去重留出余量，请在这一次响应中输出 {candidate_count} 个候选主题，不要分批。\n"
+        "候选之间必须切换到不同的核心问题、机制或用户行动，不能只换名词或问法。\n"
+        "以下主题已经生成过或使用过，不能重复：\n"
+        + history
+        + "\n\n"
+        + discouraged_prompt
+        + "每个候选都必须能在 60~120 秒内讲清，并给出明确可执行行动。"
+    )
+    if progress_callback is not None:
+        progress_callback(f"正在通过一次模型请求生成 {count} 个主题...")
+    client = OpenAI(api_key=key, base_url=base_url or os.getenv("DEEPSEEK_BASE_URL", DEFAULT_BASE_URL))
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "system", "content": TOPIC_SYSTEM_PROMPT}, {"role": "user", "content": user_prompt}],
+        response_format={"type": "json_object"},
+        max_tokens=min(8000, max(1600, candidate_count * 230)),
+    )
+    candidates = sorted(
+        _parse_topic_candidates(response.choices[0].message.content or ""),
+        key=_candidate_score,
+        reverse=True,
+    )
     topics: list[str] = []
-    for index in range(1, count + 1):
-        if progress_callback is not None:
-            progress_callback(f"正在生成第 {index}/{count} 个主题...")
-
-        def report_attempt(message: str, *, current: int = index) -> None:
-            if progress_callback is not None:
-                progress_callback(f"第 {current}/{count} 个主题：{message}")
-
-        topic = generate_unique_topic(progress_callback=report_attempt, **kwargs)
+    for candidate in candidates:
+        topic = str(candidate.get("topic", "")).strip()
+        if not _candidate_is_usable(candidate):
+            continue
+        if _topic_is_similar(topic, used) or _topic_is_similar(topic, topics):
+            continue
         topics.append(topic)
-        if progress_callback is not None:
-            progress_callback(f"第 {index}/{count} 个主题生成完成：{topic}")
+        if len(topics) == count:
+            break
+    if len(topics) < count:
+        raise RuntimeError(
+            f"模型一次返回的候选中只有 {len(topics)} 个通过历史去重和质量校验，"
+            f"少于需要的 {count} 个，请重新生成"
+        )
+    if topic_list_path is not None or output_root.resolve() == OUTPUT_ROOT.resolve():
+        for topic in topics:
+            record_topic(
+                topic,
+                status="generated",
+                history_path=history_path,
+                topic_list_path=topic_list_path or TOPIC_LIST_PATH,
+            )
+    if progress_callback is not None:
+        progress_callback(f"单次模型请求完成，已生成 {len(topics)} 个主题")
     return topics
