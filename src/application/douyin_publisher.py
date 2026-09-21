@@ -367,6 +367,67 @@ def _first_visible(page, selectors: tuple[str, ...], timeout_ms: int = 5000):
     return None
 
 
+def _locator_text(locator) -> str:
+    """Read a locator's user-visible text without making a selector assumption."""
+    for reader in ("inner_text", "text_content"):
+        try:
+            value = getattr(locator, reader)(timeout=250)
+            if value:
+                return str(value).strip()
+        except Exception:
+            continue
+    for attribute in ("aria-label", "title"):
+        try:
+            value = locator.get_attribute(attribute, timeout=250)
+            if value:
+                return str(value).strip()
+        except Exception:
+            continue
+    return ""
+
+
+def _find_collection_option(page, collection_name: str, *, timeout_ms: int = 5000):
+    """Find a visible collection option across Douyin's portal/list variants."""
+    selectors = (
+        '[role="option"]',
+        '[role="menuitem"]',
+        'li',
+        'button',
+        '[class*="option"]',
+        '[class*="item"]',
+        '[data-index]',
+        'span',
+        'div',
+    )
+    deadline = time.monotonic() + timeout_ms / 1000
+    while time.monotonic() < deadline:
+        matches: list[tuple[int, object]] = []
+        for selector in selectors:
+            try:
+                candidates = page.locator(selector)
+                count = min(candidates.count(), 200)
+            except Exception:
+                continue
+            for index in range(count):
+                candidate = candidates.nth(index)
+                try:
+                    if not candidate.is_visible(timeout=100):
+                        continue
+                except Exception:
+                    continue
+                text = _locator_text(candidate)
+                if collection_name not in text:
+                    continue
+                # Prefer the smallest visible node containing the name. This
+                # avoids clicking a portal/list container that wraps all items.
+                matches.append((len(text), candidate))
+        if matches:
+            matches.sort(key=lambda item: item[0])
+            return matches[0][1]
+        time.sleep(0.2)
+    return None
+
+
 def _find_publish_button(page, timeout_ms: int = 5000):
     """Find the exact form submit button, excluding the ``作品发布`` nav item."""
     deadline = time.monotonic() + timeout_ms / 1000
@@ -921,21 +982,7 @@ def _select_collection(page, collection_name: str = DEFAULT_DOUYIN_COLLECTION) -
         except Exception:
             continue
     _click_after_upload_settles(page, trigger)
-    option = _first_visible(
-        page,
-        (
-            f'[role="option"]:text-is("{collection_name}")',
-            f'li:text-is("{collection_name}")',
-            f'[class*="select-option"]:text-is("{collection_name}")',
-            f'[class*="option"]:text-is("{collection_name}")',
-            f'button:text-is("{collection_name}")',
-            # Options commonly include “共 N 个作品”, which means the
-            # exact-text selectors above intentionally do not match them.
-            f'text={collection_name}',
-            f'text="{collection_name}"',
-        ),
-        timeout_ms=5000,
-    )
+    option = _find_collection_option(page, collection_name, timeout_ms=7000)
     if option is None:
         raise DouyinPublishError(f'没有找到合集“{collection_name}”，已停止发布')
     _click_after_upload_settles(page, option)

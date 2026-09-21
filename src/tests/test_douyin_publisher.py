@@ -12,6 +12,7 @@ from ..application.douyin_publisher import (
     _cover_is_portrait,
     _disable_download,
     _fill_description,
+    _find_collection_option,
     _find_publish_button,
     _select_collection,
     generate_publish_metadata,
@@ -67,8 +68,9 @@ class DouyinPublisherTest(unittest.TestCase):
         with (
             patch(
                 "src.application.douyin_publisher._first_visible",
-                side_effect=[current_value, trigger, current_value, option, None],
+                side_effect=[current_value, trigger, current_value, None],
             ),
+            patch("src.application.douyin_publisher._find_collection_option", return_value=option),
             patch("src.application.douyin_publisher._click_after_upload_settles") as click,
         ):
             self.assertTrue(_select_collection(page, "计算机小常识"))
@@ -76,6 +78,42 @@ class DouyinPublisherTest(unittest.TestCase):
         self.assertEqual(click.call_args_list[0].args, (page, trigger))
         self.assertEqual(click.call_args_list[1].args, (page, current_value))
         self.assertEqual(click.call_args_list[2].args, (page, option))
+
+    def test_find_collection_option_skips_hidden_first_match(self):
+        class FakeCandidate:
+            def __init__(self, text, visible):
+                self.text = text
+                self.visible = visible
+
+            def is_visible(self, timeout=None):
+                return self.visible
+
+            def inner_text(self, timeout=None):
+                return self.text
+
+        class FakeCollection:
+            def __init__(self, values):
+                self.values = values
+
+            def count(self):
+                return len(self.values)
+
+            def nth(self, index):
+                return self.values[index]
+
+        hidden = FakeCandidate("计算机小常识", False)
+        visible = FakeCandidate("计算机小常识 共32个作品", True)
+        page = type(
+            "FakePage",
+            (),
+            {
+                "locator": lambda self, selector: (
+                    FakeCollection([hidden, visible]) if selector == "li" else FakeCollection([])
+                )
+            },
+        )()
+
+        self.assertIs(_find_collection_option(page, "计算机小常识", timeout_ms=100), visible)
 
     def test_disable_download_turns_checked_switch_off(self):
         class FakeControl:
