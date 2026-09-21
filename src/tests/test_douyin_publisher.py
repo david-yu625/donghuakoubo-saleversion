@@ -47,7 +47,7 @@ class DouyinPublisherTest(unittest.TestCase):
 
         click.assert_not_called()
 
-    def test_select_collection_opens_menu_then_chooses_named_option(self):
+    def test_select_collection_expands_row_opens_menu_then_chooses_named_option(self):
         class FakeLocator:
             @property
             def first(self):
@@ -67,14 +67,15 @@ class DouyinPublisherTest(unittest.TestCase):
         with (
             patch(
                 "src.application.douyin_publisher._first_visible",
-                side_effect=[current_value, trigger, option, None],
+                side_effect=[current_value, trigger, current_value, option, None],
             ),
             patch("src.application.douyin_publisher._click_after_upload_settles") as click,
         ):
             self.assertTrue(_select_collection(page, "计算机小常识"))
 
         self.assertEqual(click.call_args_list[0].args, (page, trigger))
-        self.assertEqual(click.call_args_list[1].args, (page, option))
+        self.assertEqual(click.call_args_list[1].args, (page, current_value))
+        self.assertEqual(click.call_args_list[2].args, (page, option))
 
     def test_disable_download_turns_checked_switch_off(self):
         class FakeControl:

@@ -876,14 +876,33 @@ def _select_collection(page, collection_name: str = DEFAULT_DOUYIN_COLLECTION) -
             if collection_name in text and re.search(r"共\s*\d+\s*个作品", text):
                 return True
 
-    # Do not use the collection name as a trigger. When an option is selected,
-    # that would click the selected value instead of opening the collection menu.
-    trigger = _first_visible(
+    # The current creator-center flow has two controls: “添加合集” first
+    # expands the row, then “合集” opens the actual collection dropdown.
+    # Do not use the collection name as a trigger: once an option is selected,
+    # that would click its displayed value instead of opening the menu.
+    add_trigger = _first_visible(
         page,
         (
             'button:has-text("添加合集")',
             '[role="button"]:has-text("添加合集")',
             'text="添加合集"',
+        ),
+        timeout_ms=2000,
+    )
+    if add_trigger is not None:
+        for ancestor_selector in ('xpath=ancestor::button[1]', 'xpath=ancestor::*[@role="button"][1]'):
+            try:
+                ancestor = add_trigger.locator(ancestor_selector)
+                if ancestor.count():
+                    add_trigger = ancestor.first
+                    break
+            except Exception:
+                continue
+        _click_after_upload_settles(page, add_trigger)
+
+    trigger = _first_visible(
+        page,
+        (
             'button:text-is("合集")',
             '[role="button"]:text-is("合集")',
             'text="合集"',
@@ -891,7 +910,7 @@ def _select_collection(page, collection_name: str = DEFAULT_DOUYIN_COLLECTION) -
         timeout_ms=5000,
     )
     if trigger is None:
-        raise DouyinPublishError("没有找到抖音合集设置入口")
+        raise DouyinPublishError("没有找到抖音合集下拉选择器")
     # Text often resolves to a span inside the actual clickable dropdown.
     for ancestor_selector in ('xpath=ancestor::button[1]', 'xpath=ancestor::*[@role="button"][1]'):
         try:
@@ -910,6 +929,9 @@ def _select_collection(page, collection_name: str = DEFAULT_DOUYIN_COLLECTION) -
             f'[class*="select-option"]:text-is("{collection_name}")',
             f'[class*="option"]:text-is("{collection_name}")',
             f'button:text-is("{collection_name}")',
+            # Options commonly include “共 N 个作品”, which means the
+            # exact-text selectors above intentionally do not match them.
+            f'text={collection_name}',
             f'text="{collection_name}"',
         ),
         timeout_ms=5000,
