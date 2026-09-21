@@ -1906,7 +1906,9 @@ class PipelineWindow(QMainWindow):
                 # macOS Jianying may spend over 30 seconds loading a draft
                 # with many generated assets.  Keep Windows' normal timeout,
                 # but give the macOS open phase enough time to settle.
-                automation_timeout = 120.0 if sys.platform == "darwin" else 30.0
+                # macOS Jianying can take several minutes to load a draft with
+                # many generated assets before its accessibility tree settles.
+                automation_timeout = 300.0 if sys.platform == "darwin" else 30.0
                 result, export_path = open_draft_and_click_export_with_path(
                     draft_folder,
                     draft_name,

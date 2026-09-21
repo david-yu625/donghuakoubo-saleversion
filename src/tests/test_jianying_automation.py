@@ -14,6 +14,13 @@ from ..application.jianying_automation import (
 
 
 class JianyingAutomationTest(unittest.TestCase):
+    def test_macos_osascript_uses_a_busy_ui_timeout_floor(self):
+        completed = type("Completed", (), {"stdout": "ok"})()
+        with patch.object(jianying_automation.subprocess, "run", return_value=completed) as run:
+            self.assertEqual(jianying_automation._run_macos_osascript("return", timeout=1), "ok")
+
+        self.assertEqual(run.call_args.kwargs["timeout"], jianying_automation.MACOS_OSASCRIPT_MIN_TIMEOUT)
+
     def test_find_named_control_matches_windows_full_description(self):
         class FakeControl:
             Name = ""

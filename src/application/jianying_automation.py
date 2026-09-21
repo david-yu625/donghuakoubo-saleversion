@@ -31,6 +31,10 @@ MACOS_JIANYING_APP_NAMES = (
     "JianyingPro.app",
     "CapCut.app",
 )
+# Accessibility queries can block while Jianying is loading a large draft or
+# rendering its timeline. Short polling intervals must not turn that busy time
+# into a hard subprocess timeout.
+MACOS_OSASCRIPT_MIN_TIMEOUT = 8.0
 
 
 class _CGPoint(ctypes.Structure):
@@ -382,6 +386,9 @@ def _find_macos_jianying_app() -> Path | None:
 
 
 def _run_macos_osascript(script: str, *, timeout: float) -> str:
+    # Give each AX query enough time to cross a temporarily busy Qt
+    # accessibility bridge, even when the caller is polling frequently.
+    command_timeout = max(float(timeout), MACOS_OSASCRIPT_MIN_TIMEOUT)
     try:
         result = subprocess.run(
             ["/usr/bin/osascript", "-e", script],
@@ -389,13 +396,15 @@ def _run_macos_osascript(script: str, *, timeout: float) -> str:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout,
+            timeout=command_timeout,
             check=True,
         )
     except FileNotFoundError as exc:
         raise JianyingAutomationError("找不到 macOS osascript 工具") from exc
     except subprocess.TimeoutExpired as exc:
-        raise JianyingAutomationError("等待 macOS 剪映界面超时") from exc
+        raise JianyingAutomationError(
+            f"等待 macOS 剪映界面超时（辅助功能查询超过 {command_timeout:g} 秒）"
+        ) from exc
     except subprocess.CalledProcessError as exc:
         message = (exc.stderr or exc.stdout or "").strip()
         if (
