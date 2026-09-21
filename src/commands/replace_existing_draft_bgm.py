@@ -82,7 +82,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("source_name")
     parser.add_argument("new_name")
-    parser.add_argument("--music", type=Path, default=Path("audio/bgm/bgm1.mp4"))
+    parser.add_argument("--music", type=Path, default=Path("audio/bgm/bgm2[Sub Title].mp3"))
     parser.add_argument("--template-draft", type=Path)
     parser.add_argument("--draft-folder", type=Path, default=default_draft_folder())
     args = parser.parse_args()

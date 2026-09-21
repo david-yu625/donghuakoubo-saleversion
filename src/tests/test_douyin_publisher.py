@@ -6,12 +6,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 from ..application.douyin_publisher import (
+    DEFAULT_DOUYIN_COLLECTION,
     DouyinPublishError,
     DouyinPublishRequest,
     _cover_is_portrait,
     _disable_download,
     _fill_description,
     _find_publish_button,
+    _select_collection,
     generate_publish_metadata,
     _set_file_input,
     _wait_for_publish_success,
@@ -23,6 +25,57 @@ from ..application.douyin_publisher import (
 
 
 class DouyinPublisherTest(unittest.TestCase):
+    def test_select_collection_keeps_existing_selected_collection(self):
+        class FakeContainer:
+            def inner_text(self, timeout=None):
+                return "计算机小常识\n共32个作品"
+
+        class FakeSelected:
+            def locator(self, selector):
+                self.test_case.assertTrue(selector.startswith("xpath="))
+                return FakeContainer()
+
+        selected = FakeSelected()
+        selected.test_case = self
+        page = object()
+
+        with (
+            patch("src.application.douyin_publisher._first_visible", return_value=selected),
+            patch("src.application.douyin_publisher._click_after_upload_settles") as click,
+        ):
+            self.assertTrue(_select_collection(page, "计算机小常识"))
+
+        click.assert_not_called()
+
+    def test_select_collection_opens_menu_then_chooses_named_option(self):
+        class FakeLocator:
+            @property
+            def first(self):
+                return self
+
+            def count(self):
+                return 0
+
+            def locator(self, _selector):
+                return self
+
+        current_value = FakeLocator()
+        trigger = FakeLocator()
+        option = FakeLocator()
+        page = object()
+
+        with (
+            patch(
+                "src.application.douyin_publisher._first_visible",
+                side_effect=[current_value, trigger, option, None],
+            ),
+            patch("src.application.douyin_publisher._click_after_upload_settles") as click,
+        ):
+            self.assertTrue(_select_collection(page, "计算机小常识"))
+
+        self.assertEqual(click.call_args_list[0].args, (page, trigger))
+        self.assertEqual(click.call_args_list[1].args, (page, option))
+
     def test_disable_download_turns_checked_switch_off(self):
         class FakeControl:
             def __init__(self):
@@ -294,8 +347,16 @@ class DouyinPublisherTest(unittest.TestCase):
 
             self.assertEqual(
                 request.validated(),
-                DouyinPublishRequest(video.resolve(), "计算机冷知识", "#计算机"),
+                DouyinPublishRequest(video.resolve(), "计算机冷知识", "#计算机", collection=DEFAULT_DOUYIN_COLLECTION),
             )
+
+    def test_publish_request_defaults_to_computer_collection(self):
+        with tempfile.TemporaryDirectory() as directory:
+            video = Path(directory) / "clip.mp4"
+            video.write_bytes(b"video")
+            request = DouyinPublishRequest(video, "标题", collection=" ").validated()
+
+        self.assertEqual(request.collection, DEFAULT_DOUYIN_COLLECTION)
 
     def test_publish_request_rejects_missing_video_and_long_title(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -353,3 +414,20 @@ class DouyinPublisherTest(unittest.TestCase):
             )
 
             self.assertEqual(discovered, video.resolve())
+
+    def test_discover_publish_assets_ignores_unrelated_download_video(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            downloads = root / "Downloads"
+            downloads.mkdir()
+            unrelated = downloads / "e23415eb5f664d8f913bc8be545ea786.mp4"
+            unrelated.write_bytes(b"unrelated")
+
+            discovered, cover = discover_publish_assets(
+                "刚选好的主题",
+                output_root=root / "output",
+                home=root,
+            )
+
+            self.assertIsNone(discovered)
+            self.assertIsNone(cover)

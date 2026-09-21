@@ -45,9 +45,12 @@ DEFAULT_DRAFT_FOLDER = default_draft_folder()
 
 def find_default_bgm_path() -> Path:
     bgm_dir = PROJECT_ROOT / "audio" / "bgm"
-    configured = bgm_dir / "bgm1.mp4"
+    configured = bgm_dir / "bgm2[Sub Title].mp3"
     if configured.is_file():
         return configured
+    legacy = bgm_dir / "bgm1.mp4"
+    if legacy.is_file():
+        return legacy
     candidates = sorted(
         (
             path

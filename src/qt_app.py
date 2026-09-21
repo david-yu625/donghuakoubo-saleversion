@@ -72,6 +72,7 @@ from .application.jianying_automation import (
     validate_draft_path,
 )
 from .application.douyin_publisher import (
+    DEFAULT_DOUYIN_COLLECTION,
     DouyinPublishError,
     DouyinPublishRequest,
     discover_publish_assets,
@@ -399,6 +400,7 @@ class PipelineWindow(QMainWindow):
         self.douyin_cover_input: QLineEdit | None = None
         self.douyin_title_input: QLineEdit | None = None
         self.douyin_topics_input: QLineEdit | None = None
+        self.douyin_collection_input: QLineEdit | None = None
         self.douyin_metadata_button: QPushButton | None = None
         self.douyin_description_input: QPlainTextEdit | None = None
         self.douyin_open_button: QPushButton | None = None
@@ -1244,6 +1246,11 @@ class PipelineWindow(QMainWindow):
         self.douyin_topics_input.setPlaceholderText("多个话题用空格或逗号分隔，例如：人工智能 计算机知识")
         self.douyin_topics_input.setToolTip("桌面端会将这些 #话题写入抖音作品描述框，并按空格让抖音识别为话题标签")
         form.addRow(self._form_label("话题标签", width=92), self.douyin_topics_input)
+
+        self.douyin_collection_input = QLineEdit(DEFAULT_DOUYIN_COLLECTION)
+        self.douyin_collection_input.setPlaceholderText("发布时加入的合集名称")
+        self.douyin_collection_input.setToolTip("发布时会自动选择这个合集；默认：计算机小常识")
+        form.addRow(self._form_label("合集", width=92), self.douyin_collection_input)
 
         self.douyin_description_input = QPlainTextEdit()
         self.douyin_description_input.setObjectName("contextInput")
@@ -2252,6 +2259,7 @@ class PipelineWindow(QMainWindow):
         assert self.douyin_cover_input is not None
         assert self.douyin_title_input is not None
         assert self.douyin_topics_input is not None
+        assert self.douyin_collection_input is not None
         assert self.douyin_description_input is not None
         self.scan_publish_assets(preserve_manual=True)
         topic = self.inputs["topic"].text().strip()
@@ -2268,6 +2276,7 @@ class PipelineWindow(QMainWindow):
             title=self.douyin_title_input.text(),
             description=self.douyin_description_input.toPlainText(),
             topics=self.douyin_topics_input.text(),
+            collection=self.douyin_collection_input.text(),
         )
         try:
             return request.validated()

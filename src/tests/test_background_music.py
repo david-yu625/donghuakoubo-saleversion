@@ -22,7 +22,7 @@ class BackgroundMusicTest(unittest.TestCase):
     def test_source_audio_is_extracted_once_to_project_assets(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            source = root / "audio" / "bgm" / "bgm1.mp4"
+            source = root / "audio" / "bgm" / "bgm2[Sub Title].mp3"
             source.parent.mkdir(parents=True)
             source.write_bytes(b"video-with-audio")
             project = root / "output" / "topic"

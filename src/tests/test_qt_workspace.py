@@ -75,6 +75,7 @@ class QtWorkspaceTest(unittest.TestCase):
         self.assertIsNotNone(self.window.douyin_publish_button)
         self.assertIsNotNone(self.window.douyin_auto_publish_checkbox)
         self.assertTrue(self.window.douyin_auto_publish_checkbox.isChecked())
+        self.assertEqual(self.window.douyin_collection_input.text(), "计算机小常识")
         self.window.douyin_auto_publish_checkbox.setChecked(False)
         self.assertFalse(self.window.douyin_auto_publish_checkbox.isChecked())
 

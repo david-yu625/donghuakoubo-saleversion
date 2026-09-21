@@ -35,6 +35,7 @@ DOUYIN_PUBLISH_URL_MARKERS = (
     "/creator-micro/content/post/video",
 )
 DOUYIN_MANAGE_URL_MARKER = "/creator-micro/content/manage"
+DEFAULT_DOUYIN_COLLECTION = "计算机小常识"
 VIDEO_SUFFIXES = {".mp4", ".mov", ".m4v", ".avi"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
@@ -50,6 +51,7 @@ class DouyinPublishRequest:
     description: str = ""
     cover_path: Path | None = None
     topics: tuple[str, ...] = ()
+    collection: str = DEFAULT_DOUYIN_COLLECTION
 
     def validated(self) -> "DouyinPublishRequest":
         video = self.video_path.expanduser().resolve()
@@ -70,7 +72,8 @@ class DouyinPublishRequest:
             if cover.suffix.lower() not in IMAGE_SUFFIXES:
                 raise DouyinPublishError("封面只支持 PNG、JPG、JPEG 或 WEBP 图片")
         topics = normalize_topics(self.topics)
-        return DouyinPublishRequest(video, title, self.description.strip(), cover, topics)
+        collection = self.collection.strip() or DEFAULT_DOUYIN_COLLECTION
+        return DouyinPublishRequest(video, title, self.description.strip(), cover, topics, collection)
 
 
 def normalize_topics(value: str | Iterable[str]) -> tuple[str, ...]:
@@ -194,6 +197,11 @@ def discover_publish_assets(
                     score += 1000
                 if root in project_roots:
                     score += 500
+                # External folders such as Downloads may contain unrelated
+                # videos. Without a topic match, a newest random filename
+                # would otherwise win the fallback scan.
+                if root not in project_roots and score == 0:
+                    continue
                 video_candidates[path.resolve()] = score
         except OSError:
             continue
@@ -717,7 +725,7 @@ def _switch_state(control) -> bool | None:
 
 
 def _disable_download(page) -> bool:
-    """Disable downloads and fail unless the off state can be confirmed."""
+    """Set Douyin's save permission to disallow downloads and verify it."""
     _remove_blocking_overlays(page)
     label_selectors = tuple(
         f'text="{text}"'
@@ -790,9 +798,138 @@ def _disable_download(page) -> bool:
                     page.wait_for_timeout(100)
                 raise DouyinPublishError("已操作“允许下载”开关，但未能确认它已关闭，已停止发布")
 
+    # The current creator-center UI renders this setting as two radio cards:
+    # 保存权限 -> 允许 / 不允许. Scope the click to that row so unrelated
+    # “不允许” text elsewhere on the page cannot be selected.
+    def safe_first(selectors: tuple[str, ...], timeout_ms: int = 1000):
+        try:
+            return _first_visible(page, selectors, timeout_ms=timeout_ms)
+        except Exception:
+            return None
+
+    permission_label = safe_first(('text="保存权限"', 'text="下载权限"'))
+    if permission_label is not None:
+        containers = [permission_label]
+        containers.extend(
+            permission_label.locator("xpath=" + "/".join([".."] * depth))
+            for depth in range(1, 6)
+        )
+        for container in containers:
+            for selector in (
+                'label:has-text("不允许")',
+                '[role="radio"][aria-label="不允许"]',
+                'text="不允许"',
+            ):
+                try:
+                    option = container.locator(selector).last
+                    if option.is_visible(timeout=250):
+                        option.click(timeout=5000)
+                        return True
+                except Exception:
+                    continue
+
     if found_label and not found_control:
         raise DouyinPublishError("找到了“允许下载/保存”设置，但无法确认开关状态，已停止发布")
     raise DouyinPublishError("没有找到“允许下载/保存”设置，为避免可下载发布，已停止发布")
+
+
+def _click_after_upload_settles(page, locator, *, timeout_ms: int = 15000) -> None:
+    """Click a form control after Douyin's transient disabled portal settles."""
+    deadline = time.monotonic() + timeout_ms / 1000
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        _remove_blocking_overlays(page)
+        try:
+            if hasattr(locator, "is_enabled") and not locator.is_enabled(timeout=250):
+                page.wait_for_timeout(300)
+                continue
+            locator.click(timeout=1000)
+            return
+        except Exception as exc:
+            last_error = exc
+            page.wait_for_timeout(300)
+    detail = f": {last_error}" if last_error is not None else ""
+    raise DouyinPublishError(f"抖音页面仍在处理视频，无法操作发布设置{detail}")
+
+
+def _select_collection(page, collection_name: str = DEFAULT_DOUYIN_COLLECTION) -> bool:
+    """Select the required collection in the creator-center upload form."""
+    collection_name = collection_name.strip()
+    if not collection_name:
+        raise DouyinPublishError("抖音合集名称不能为空")
+
+    # Once selected, the current UI displays the collection as e.g.
+    # “计算机小常识 共32个作品”. Do this check before opening any dropdown:
+    # the same text is also used by options inside the popup.
+    selected = _first_visible(page, (f'text="{collection_name}"',), timeout_ms=800)
+    if selected is not None:
+        selected_containers = [selected]
+        selected_containers.extend(
+            selected.locator("xpath=" + "/".join([".."] * depth))
+            for depth in range(1, 5)
+        )
+        for container in selected_containers:
+            try:
+                text = container.inner_text(timeout=300)
+            except Exception:
+                continue
+            if collection_name in text and re.search(r"共\s*\d+\s*个作品", text):
+                return True
+
+    # Do not use the collection name as a trigger. When an option is selected,
+    # that would click the selected value instead of opening the collection menu.
+    trigger = _first_visible(
+        page,
+        (
+            'button:has-text("添加合集")',
+            '[role="button"]:has-text("添加合集")',
+            'text="添加合集"',
+            'button:text-is("合集")',
+            '[role="button"]:text-is("合集")',
+            'text="合集"',
+        ),
+        timeout_ms=5000,
+    )
+    if trigger is None:
+        raise DouyinPublishError("没有找到抖音合集设置入口")
+    # Text often resolves to a span inside the actual clickable dropdown.
+    for ancestor_selector in ('xpath=ancestor::button[1]', 'xpath=ancestor::*[@role="button"][1]'):
+        try:
+            ancestor = trigger.locator(ancestor_selector)
+            if ancestor.count():
+                trigger = ancestor.first
+                break
+        except Exception:
+            continue
+    _click_after_upload_settles(page, trigger)
+    option = _first_visible(
+        page,
+        (
+            f'[role="option"]:text-is("{collection_name}")',
+            f'li:text-is("{collection_name}")',
+            f'[class*="select-option"]:text-is("{collection_name}")',
+            f'[class*="option"]:text-is("{collection_name}")',
+            f'button:text-is("{collection_name}")',
+            f'text="{collection_name}"',
+        ),
+        timeout_ms=5000,
+    )
+    if option is None:
+        raise DouyinPublishError(f'没有找到合集“{collection_name}”，已停止发布')
+    _click_after_upload_settles(page, option)
+    confirm = _first_visible(
+        page,
+        (
+            'button:text-is("确定")',
+            'button:text-is("完成")',
+            '[role="button"]:text-is("确定")',
+            '[role="button"]:text-is("完成")',
+        ),
+        timeout_ms=1200,
+    )
+    if confirm is not None:
+        _click_after_upload_settles(page, confirm)
+    return True
 
 
 def _wait_for_publish_success(page, timeout_ms: int) -> None:
@@ -985,6 +1122,7 @@ def publish_to_douyin(
             _wait_for_upload_complete(page, timeout_ms)
             if request.cover_path is not None:
                 _upload_cover(page, request.cover_path)
+            _select_collection(page, request.collection)
             _disable_download(page)
             _remove_blocking_overlays(page)
             publish_button = _find_publish_button(page, timeout_ms=15000)

@@ -8,7 +8,7 @@ import shutil
 import subprocess
 
 
-DEFAULT_BACKGROUND_MUSIC_SOURCE = Path("audio/bgm/bgm1.mp4")
+DEFAULT_BACKGROUND_MUSIC_SOURCE = Path("audio/bgm/bgm2[Sub Title].mp3")
 BACKGROUND_MUSIC_NAME = "background_music.m4a"
 BACKGROUND_MUSIC_SOURCE_META_NAME = "background_music.source.json"
 

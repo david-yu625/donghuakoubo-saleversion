@@ -31,7 +31,7 @@ commands → application
 - 05 只给第 04 步的内容设计添加统一白底 Excalidraw 信息图风格规则，输出带素材路径的任务表
 - 06 按元素类型生成素材：人物和道具使用文生图，箭头、曲线、空白标签牌等文字敏感素材使用确定性原生图形
 - 草稿生成前准备项目级统一背景，按画布方向输出到 `prepared_assets/background_<宽>x<高>.png`
-- 草稿生成前从默认 `audio/bgm/bgm1.mp4` 无损提取项目级背景音乐，输出到 `prepared_assets/background_music.m4a`
+- 草稿生成前从默认 `audio/bgm/bgm2[Sub Title].mp3` 无损提取项目级背景音乐，输出到 `prepared_assets/background_music.m4a`
 - 背景图与元素图都使用不透明白底；不抠图，背景保留完整画布，元素只裁掉主体四周多余白边
 
 该层还负责校验大模型输出的 Shot 范围，Shot 必须覆盖对应 timeline 文案和全部元素。它不做布局和渲染。

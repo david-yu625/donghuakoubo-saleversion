@@ -25,7 +25,7 @@ def main() -> int:
     parser.add_argument("--draft-name", default="src_完整布局草稿")
     parser.add_argument("--background", type=Path)
     parser.add_argument("--no-background", action="store_true")
-    parser.add_argument("--bgm", type=Path, help="背景音乐源文件，默认使用 audio/bgm/bgm1.mp4")
+    parser.add_argument("--bgm", type=Path, help="背景音乐源文件，默认使用 audio/bgm/bgm2[Sub Title].mp3")
     parser.add_argument("--audio", type=Path, help="旁白音频文件；默认使用项目目录下的 narration.wav")
     parser.add_argument("--theme", default="", help="兼容参数；当前固定使用白色板书主题")
     parser.add_argument("--orientation", default="", help="画布方向：portrait/landscape 或 竖屏/横屏")

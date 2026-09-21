@@ -58,7 +58,7 @@ pipeline -> visual_direction -> layouts -> renderers
 | `element_timeline_with_assets.csv` | 05 生图提示词 | 带素材路径的元素表 |
 | `generated_assets_plus/` | 06 真实图片 | 自动生成的真实图片素材 |
 | `prepared_assets/background_<宽>x<高>.png` | 08 草稿 | 按画布方向生成统一背景 |
-| `prepared_assets/background_music.m4a` | 08 草稿 | 从默认 `bgm1.mp4` 提取的项目背景音乐 |
+| `prepared_assets/background_music.m4a` | 08 草稿 | 从默认 `bgm2[Sub Title].mp3` 提取的项目背景音乐 |
 | `audio/sound_effect/library/*.mp3` | 项目固定素材 | 从参考草稿整理出的稳定入场音效库 |
 | `layout_result.json` | 07 布局 | 08 直接消费的完整 `LayoutResult` |
 | 剪映草稿目录 | 08 草稿 | 最终可编辑项目 |
@@ -85,7 +85,7 @@ element_id,shot_id,type,role,content,start_ms,end_ms,asset_path
 
 GUI 默认执行第 06 步。`06_generate_images.py` calls the image service from `prepare/image_generation.py`; the step implementation is in `prepare/images.py`.
 
-生成完整草稿时，`application` 会调用 `prepare` 在项目目录中确定性生成统一背景，并从 `audio/bgm/bgm1.mp4` 提取背景音乐。背景音乐以低音量独立音轨铺满全片，时长不足时自动循环。图片和展示区关键词的入场动画会由视觉层分配克制的音效语义：相近时刻只保留一个，任意 4 秒最多两个；渲染层再从项目音效库中确定性轮换具体声音并写入独立音轨。字幕和顶部全局标题不参与音效触发。
+生成完整草稿时，`application` 会调用 `prepare` 在项目目录中确定性生成统一背景，并从 `audio/bgm/bgm2[Sub Title].mp3` 提取背景音乐。背景音乐以略微提高后的低音量独立音轨铺满全片，时长不足时自动循环。图片和展示区关键词的入场动画会由视觉层分配克制的音效语义：相近时刻只保留一个，任意 4 秒最多两个；渲染层再从项目音效库中确定性轮换具体声音并写入独立音轨。字幕和顶部全局标题不参与音效触发。
 
 ## 布局体系
 
