@@ -1347,11 +1347,12 @@ class PipelineWindow(QMainWindow):
                 run.setToolTip("打开当前剪映草稿并点击导出（支持 Windows 和 macOS）")
                 self.automation_step_button = run
             elif key.startswith("infinite_"):
-                run, _ = self._described_button(
+                run, action_label = self._described_button(
                     action,
                     INFINITE_STAGE_DESCRIPTIONS[key],
                     lambda checked=False, k=key: self.run_single_step(k),
                 )
+                self.run_button_labels[key] = action_label
                 run.setToolTip(
                     f"只执行当前步骤：{title}。完成后可在右侧查看产物状态，再继续下一步。"
                 )
@@ -1375,8 +1376,11 @@ class PipelineWindow(QMainWindow):
                 run.setFixedWidth(420)
             else:
                 run.setFixedWidth(148 if key == "images" else (420 if not view_action else 204))
-            if key in STEP_BUTTON_DESCRIPTIONS:
-                run.setFixedHeight(50)
+            if key in STEP_BUTTON_DESCRIPTIONS or key.startswith("infinite_"):
+                # Described actions contain two text columns.  Leave enough
+                # vertical room for wrapped Chinese copy instead of allowing
+                # the description to paint over the neighboring row.
+                run.setFixedHeight(68)
             row_layout.addWidget(run)
             self.status_labels[key] = status
             self.artifact_labels[key] = artifact
@@ -1695,13 +1699,14 @@ class PipelineWindow(QMainWindow):
         arrow_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         title_label = QLabel(title)
         title_label.setObjectName("describedActionTitle")
-        title_label.setAlignment(Qt.AlignCenter)
-        title_label.setFixedWidth(140)
+        title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        title_label.setWordWrap(True)
+        title_label.setFixedWidth(190)
         title_label.setStyleSheet("background: transparent; border: none;")
         title_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         description_label = QLabel(description)
         description_label.setObjectName("describedActionDescription")
-        description_label.setAlignment(Qt.AlignCenter)
+        description_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         description_label.setWordWrap(True)
         description_label.setStyleSheet(
             "font-size: 10px; background: transparent; border: none; "
@@ -3223,7 +3228,7 @@ class PipelineWindow(QMainWindow):
                         exists = False
                 self.status_labels[key].setText("运行中" if running else ("完成" if exists else "未运行"))
                 self.artifact_labels[key].setText("已生成" if exists else "未生成")
-                self.run_buttons[key].setText(RERUN_ACTIONS[key] if exists else action)
+                self.run_button_labels[key].setText(RERUN_ACTIONS[key] if exists else action)
                 self.run_buttons[key].setEnabled(not running)
         draft_ready = self.artifact_exists("draft")
         self._set_jianying_automation_enabled(

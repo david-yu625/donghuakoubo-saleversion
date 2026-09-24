@@ -79,6 +79,18 @@ class QtWorkspaceTest(unittest.TestCase):
         self.window.douyin_auto_publish_checkbox.setChecked(False)
         self.assertFalse(self.window.douyin_auto_publish_checkbox.isChecked())
 
+    def test_infinite_canvas_action_buttons_have_room_for_wrapped_descriptions(self):
+        self.window.render_mode_combo.setCurrentIndex(1)
+        self.assertEqual(
+            [self.window.run_buttons[key].height() for key in (
+                "infinite_prepare",
+                "infinite_plan",
+                "infinite_frames",
+                "infinite_encode",
+            )],
+            [68, 68, 68, 68],
+        )
+
     def test_manual_metadata_does_not_trigger_generation_again_when_title_equals_topic(self):
         with tempfile.NamedTemporaryFile(suffix=".mp4") as video:
             self.window.douyin_video_input.setText(video.name)
