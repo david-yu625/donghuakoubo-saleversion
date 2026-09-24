@@ -1701,7 +1701,7 @@ class PipelineWindow(QMainWindow):
         title_label.setObjectName("describedActionTitle")
         title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         title_label.setWordWrap(True)
-        title_label.setFixedWidth(190)
+        title_label.setFixedWidth(170)
         title_label.setStyleSheet("background: transparent; border: none;")
         title_label.setAttribute(Qt.WA_TransparentForMouseEvents)
         description_label = QLabel(description)
