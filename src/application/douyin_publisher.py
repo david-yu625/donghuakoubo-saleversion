@@ -386,8 +386,8 @@ def _locator_text(locator) -> str:
     return ""
 
 
-def _find_collection_option(page, collection_name: str, *, timeout_ms: int = 5000):
-    """Find a visible collection option across Douyin's portal/list variants."""
+def _find_collection_option(page, collection_name: str, *, anchor_box=None, timeout_ms: int = 5000):
+    """Find a visible collection option below the collection picker."""
     selectors = (
         '[role="option"]',
         '[role="menuitem"]',
@@ -418,6 +418,21 @@ def _find_collection_option(page, collection_name: str, *, timeout_ms: int = 500
                 text = _locator_text(candidate)
                 if collection_name not in text:
                     continue
+                if anchor_box is not None:
+                    try:
+                        candidate_box = candidate.bounding_box(timeout=250)
+                    except Exception:
+                        candidate_box = None
+                    if candidate_box:
+                        # The picker opens its collection list beneath the
+                        # "choose collection" field. Ignore same-name text in
+                        # titles, already-selected values, and other page areas.
+                        if candidate_box["y"] < anchor_box["y"] + anchor_box["height"] - 2:
+                            continue
+                        if candidate_box["x"] + candidate_box["width"] < anchor_box["x"] - 24:
+                            continue
+                        if candidate_box["x"] > anchor_box["x"] + anchor_box["width"] + 24:
+                            continue
                 # Prefer the smallest visible node containing the name. This
                 # avoids clicking a portal/list container that wraps all items.
                 matches.append((len(text), candidate))
@@ -937,42 +952,22 @@ def _select_collection(page, collection_name: str = DEFAULT_DOUYIN_COLLECTION) -
             if collection_name in text and re.search(r"共\s*\d+\s*个作品", text):
                 return True
 
-    # The current creator-center flow has two controls: “添加合集” first
-    # expands the row, then “合集” opens the actual collection dropdown.
-    # Do not use the collection name as a trigger: once an option is selected,
-    # that would click its displayed value instead of opening the menu.
-    add_trigger = _first_visible(
-        page,
-        (
-            'button:has-text("添加合集")',
-            '[role="button"]:has-text("添加合集")',
-            'text="添加合集"',
-        ),
-        timeout_ms=2000,
-    )
-    if add_trigger is not None:
-        for ancestor_selector in ('xpath=ancestor::button[1]', 'xpath=ancestor::*[@role="button"][1]'):
-            try:
-                ancestor = add_trigger.locator(ancestor_selector)
-                if ancestor.count():
-                    add_trigger = ancestor.first
-                    break
-            except Exception:
-                continue
-        _click_after_upload_settles(page, add_trigger)
-
+    # Open the explicit placeholder field. A broad text match for "合集"
+    # can resolve to the section label or another control elsewhere on the
+    # upload page, so the collection name must be searched relative to this
+    # picker after it opens.
     trigger = _first_visible(
         page,
         (
-            'button:text-is("合集")',
-            '[role="button"]:text-is("合集")',
-            'text="合集"',
+            'button:text-is("请选择合集")',
+            '[role="button"]:text-is("请选择合集")',
+            'text="请选择合集"',
+            'input[placeholder="请选择合集"]',
         ),
-        timeout_ms=5000,
+        timeout_ms=7000,
     )
     if trigger is None:
-        raise DouyinPublishError("没有找到抖音合集下拉选择器")
-    # Text often resolves to a span inside the actual clickable dropdown.
+        raise DouyinPublishError("没有找到“请选择合集”下拉选择器")
     for ancestor_selector in ('xpath=ancestor::button[1]', 'xpath=ancestor::*[@role="button"][1]'):
         try:
             ancestor = trigger.locator(ancestor_selector)
@@ -981,8 +976,12 @@ def _select_collection(page, collection_name: str = DEFAULT_DOUYIN_COLLECTION) -
                 break
         except Exception:
             continue
+    try:
+        picker_box = trigger.bounding_box(timeout=500)
+    except Exception:
+        picker_box = None
     _click_after_upload_settles(page, trigger)
-    option = _find_collection_option(page, collection_name, timeout_ms=7000)
+    option = _find_collection_option(page, collection_name, anchor_box=picker_box, timeout_ms=7000)
     if option is None:
         raise DouyinPublishError(f'没有找到合集“{collection_name}”，已停止发布')
     _click_after_upload_settles(page, option)

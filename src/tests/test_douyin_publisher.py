@@ -60,6 +60,9 @@ class DouyinPublisherTest(unittest.TestCase):
             def locator(self, _selector):
                 return self
 
+            def bounding_box(self, timeout=None):
+                return {"x": 10, "y": 20, "width": 200, "height": 30}
+
         current_value = FakeLocator()
         trigger = FakeLocator()
         option = FakeLocator()
@@ -68,16 +71,20 @@ class DouyinPublisherTest(unittest.TestCase):
         with (
             patch(
                 "src.application.douyin_publisher._first_visible",
-                side_effect=[current_value, trigger, current_value, None],
-            ),
-            patch("src.application.douyin_publisher._find_collection_option", return_value=option),
+                side_effect=[current_value, trigger, None],
+            ) as find_visible,
+            patch("src.application.douyin_publisher._find_collection_option", return_value=option) as find_option,
             patch("src.application.douyin_publisher._click_after_upload_settles") as click,
         ):
             self.assertTrue(_select_collection(page, "计算机小常识"))
 
         self.assertEqual(click.call_args_list[0].args, (page, trigger))
-        self.assertEqual(click.call_args_list[1].args, (page, current_value))
-        self.assertEqual(click.call_args_list[2].args, (page, option))
+        self.assertEqual(click.call_args_list[1].args, (page, option))
+        self.assertEqual(
+            find_option.call_args.kwargs["anchor_box"],
+            {"x": 10, "y": 20, "width": 200, "height": 30},
+        )
+        self.assertIn("text=\"请选择合集\"", find_visible.call_args_list[1].args[1])
 
     def test_find_collection_option_skips_hidden_first_match(self):
         class FakeCandidate:
@@ -114,6 +121,53 @@ class DouyinPublisherTest(unittest.TestCase):
         )()
 
         self.assertIs(_find_collection_option(page, "计算机小常识", timeout_ms=100), visible)
+
+    def test_find_collection_option_requires_match_below_picker(self):
+        class FakeCandidate:
+            def __init__(self, text, y):
+                self.text = text
+                self.y = y
+
+            def is_visible(self, timeout=None):
+                return True
+
+            def inner_text(self, timeout=None):
+                return self.text
+
+            def bounding_box(self, timeout=None):
+                return {"x": 100, "y": self.y, "width": 160, "height": 24}
+
+        class FakeCollection:
+            def __init__(self, values):
+                self.values = values
+
+            def count(self):
+                return len(self.values)
+
+            def nth(self, index):
+                return self.values[index]
+
+        class FakePicker:
+            def bounding_box(self, timeout=None):
+                return {"x": 100, "y": 200, "width": 200, "height": 32}
+
+        wrong_area = FakeCandidate("计算机小常识", 120)
+        option = FakeCandidate("计算机小常识", 240)
+        page = type(
+            "FakePage",
+            (object,),
+            {"locator": lambda self, selector: FakeCollection([wrong_area, option]) if selector == "li" else FakeCollection([])},
+        )()
+
+        self.assertIs(
+            _find_collection_option(
+                page,
+                "计算机小常识",
+                anchor_box=FakePicker().bounding_box(),
+                timeout_ms=100,
+            ),
+            option,
+        )
 
     def test_disable_download_turns_checked_switch_off(self):
         class FakeControl:
