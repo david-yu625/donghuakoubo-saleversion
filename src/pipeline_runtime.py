@@ -571,8 +571,9 @@ def reuse_completed_materials(options: Options, *, output_root: Path = OUTPUT_RO
     narration = topic_dir / "narration.wav"
     shot_csv = topic_dir / "shot_timeline_source_time.csv"
     storyboard_csv = topic_dir / "storyboard_prompts.csv"
-    prompt_csv = topic_dir / "image_prompts_plus.csv"
-    element_csv = topic_dir / "element_timeline_with_assets.csv"
+    remotion = options.render_mode == "infinite_canvas"
+    prompt_csv = topic_dir / ("image_prompts_remotion.csv" if remotion else "image_prompts_plus.csv")
+    element_csv = topic_dir / ("element_timeline_remotion.csv" if remotion else "element_timeline_with_assets.csv")
 
     complete = (
         wenan.is_file(),
@@ -649,6 +650,9 @@ def build_commands(options: Options) -> tuple[list[tuple[str, list[str]]], Path]
     storyboard_prompt_csv = topic_dir / "storyboard_prompts.csv"
     prompt_csv = topic_dir / "image_prompts_plus.csv"
     element_assets = topic_dir / "element_timeline_with_assets.csv"
+    remotion_prompt_csv = topic_dir / "image_prompts_remotion.csv"
+    remotion_element_assets = topic_dir / "element_timeline_remotion.csv"
+    remotion_asset_dir = topic_dir / "generated_assets_remotion"
     layout_json = topic_dir / "layout_result.json"
     draft_name = draft_name_for_orientation(
         options.draft_name or f"{safe_topic(topic)}_src",
@@ -698,29 +702,34 @@ def build_commands(options: Options) -> tuple[list[tuple[str, list[str]]], Path]
         ]))
     if options.run_prompts:
         image_model = options.image_model.strip() or DEFAULT_IMAGE_MODEL
+        remotion = options.render_mode == "infinite_canvas"
         commands.append(("05 生图提示词", [
             py,
             "-m",
             "src.05_generate_image_prompts",
             str(storyboard_prompt_csv),
             "--prompt-output",
-            str(prompt_csv),
+            str(remotion_prompt_csv if remotion else prompt_csv),
             "--element-output",
-            str(element_assets),
+            str(remotion_element_assets if remotion else element_assets),
+            "--asset-dir",
+            str(remotion_asset_dir if remotion else topic_dir / "generated_assets_plus"),
             "--model",
             image_model,
             "--theme",
             visual_theme.key,
             "--orientation",
             options.orientation,
+            *( ["--mode", "remotion"] if remotion else [] ),
         ]))
     if options.run_images:
         image_model = options.image_model.strip() or DEFAULT_IMAGE_MODEL
+        remotion = options.render_mode == "infinite_canvas"
         image_command = [
             py,
             "-m",
             "src.06_generate_images",
-            str(prompt_csv),
+            str(remotion_prompt_csv if remotion else prompt_csv),
             "--model",
             image_model,
             "--theme",

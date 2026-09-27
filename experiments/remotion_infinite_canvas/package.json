@@ -3,13 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "prepare": "python3 prepare_assets.py",
+    "prepare:assets": "python3 prepare_assets.py",
     "studio": "remotion studio src/index.ts",
     "render": "npm run render:frames && npm run encode",
     "render:frames": "remotion render src/index.ts InfiniteCanvas out/frames --sequence --image-format=jpeg --jpeg-quality=95 --overwrite",
     "encode": "python3 encode.py",
     "render:frame": "remotion still src/index.ts InfiniteCanvas out/preview.png --frame=430",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:effects": "node --test tests/effects.test.cjs tests/camera.test.cjs"
   },
   "dependencies": {
     "@remotion/cli": "4.0.526",

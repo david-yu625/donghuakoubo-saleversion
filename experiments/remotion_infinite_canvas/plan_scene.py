@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from prepare_assets import build_nodes, read_asset_timings, read_duration, read_project_captions
+from prepare_assets import build_nodes, read_asset_timings, read_duration, read_project_captions, read_project_chapters
 
 
 ROOT = Path(__file__).resolve().parent
@@ -25,6 +25,7 @@ def main() -> int:
         raise FileNotFoundError("Stage 01 素材不完整，请重新执行素材准备")
     duration = read_duration(narration)
     captions = read_project_captions(project)
+    chapters = read_project_chapters(project)
     asset_timings = read_asset_timings(project)
     if not captions:
         captions = [{"start": 0.0, "end": duration, "text": str(source.get("title", project.parent.name))}]
@@ -34,10 +35,11 @@ def main() -> int:
         "projectDir": str(project),
         "durationSeconds": duration,
         "captions": captions,
+        "chapters": chapters,
         "assets": asset_names,
         "nodes": build_nodes(
             asset_names,
-            captions,
+            chapters,
             duration,
             asset_timings,
             str(source.get("title", project.parent.name)),

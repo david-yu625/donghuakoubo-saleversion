@@ -8,6 +8,7 @@ import csv
 import hashlib
 import random
 import shutil
+import sys
 import wave
 from pathlib import Path
 
@@ -15,6 +16,11 @@ from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from src.pipeline.project_reader import read_subtitles
+from src.application.project_compiler import split_subtitle_text, distribute_subtitle_timing
 EXPERIMENT = Path(__file__).resolve().parent
 PROJECT = ROOT / "output" / "计算机硬盘的起源与发展" / "landscape"
 PUBLIC = EXPERIMENT / "public"
@@ -33,7 +39,11 @@ EFFECTS = (
     "scan",
     "burst",
 )
-LAYOUTS = ("center", "wide", "low", "high", "close")
+LAYOUTS = ("horizontal", "staggered", "vertical", "grid")
+EFFECT_CATALOG = json.loads((EXPERIMENT / "effect_catalog.json").read_text(encoding="utf-8"))
+IMAGE_ANIMATIONS = tuple(EFFECT_CATALOG["image_animations"])
+TRANSITIONS = tuple(EFFECT_CATALOG["transitions"])
+CAMERA_MOVES = tuple(EFFECT_CATALOG["camera_moves"])
 
 
 def _seeded_rng(seed: str) -> random.Random:
@@ -63,28 +73,53 @@ def effect_for_caption(text: str, index: int, seed: str, avoid: str = "") -> str
     return pool[0]
 
 
-def layout_for_shot(seed: str) -> str:
-    """Pick a stable cinematic framing variant for one shot."""
-    return _seeded_rng(f"layout:{seed}").choice(LAYOUTS)
+def layout_for_shot(seed: str, image_count: int) -> str:
+    """Choose only compositions that support the shot's image count."""
+    if image_count <= 1:
+        return "solo"
+    choices = ("horizontal", "staggered", "vertical") if image_count == 2 else LAYOUTS
+    return _seeded_rng(f"layout:{seed}:{image_count}").choice(choices)
 
 
-def make_white_transparent(source: Path, destination: Path) -> None:
-    """Keep the original drawing while making its near-white paper transparent."""
-    with Image.open(source) as opened:
+def image_animation_for_asset(seed: str, index: int, avoid: str = "") -> str:
+    choices = [item for item in IMAGE_ANIMATIONS if item != avoid] or list(IMAGE_ANIMATIONS)
+    _seeded_rng(f"image-animation:{seed}:{index}").shuffle(choices)
+    return choices[0]
+
+
+def transition_for_shot(seed: str, index: int, avoid: str = "") -> str:
+    choices = [item for item in TRANSITIONS if item != avoid] or list(TRANSITIONS)
+    _seeded_rng(f"shot-transition:{seed}:{index}").shuffle(choices)
+    return choices[0]
+
+
+def varied_effect_sequence(choices: tuple[str, ...], count: int, seed: str) -> list[str]:
+    """Use the complete library before repeating, including across shot boundaries."""
+    if not choices or count <= 0:
+        return []
+    rng = _seeded_rng(seed)
+    result: list[str] = []
+    while len(result) < count:
+        cycle = list(choices)
+        rng.shuffle(cycle)
+        if result and len(cycle) > 1 and cycle[0] == result[-1]:
+            cycle[0], cycle[1] = cycle[1], cycle[0]
+        result.extend(cycle)
+    return result[:count]
+
+
+def prepare_asset(source: Path, destination: Path) -> None:
+    """Copy a complete illustration card without destructive background removal."""
+    # These generated storyboard images use white paper, shadows, and
+    # anti-aliased edges as part of the artwork. Removing near-white pixels
+    # makes most of the illustration translucent and produces dirty halos.
+    # InfiniteCanvas places cards in a non-overlapping layout, so alpha is
+    # optional rather than a prerequisite.
+    original = source.parent / "originals" / source.name
+    # The shared asset folder may already contain a destructive cutout.
+    # Recover the untouched illustration when the original is available.
+    with Image.open(original if original.is_file() else source) as opened:
         image = opened.convert("RGBA")
-    pixels = []
-    for red, green, blue, alpha in image.getdata():
-        whiteness = min(red, green, blue)
-        if whiteness >= 250:
-            pixels.append((red, green, blue, 0))
-        elif whiteness >= 225 and max(red, green, blue) - whiteness < 28:
-            pixels.append((red, green, blue, round(alpha * (250 - whiteness) / 25)))
-        else:
-            pixels.append((red, green, blue, alpha))
-    image.putdata(pixels)
-    box = image.getbbox()
-    if box is not None:
-        image = image.crop(box)
     destination.parent.mkdir(parents=True, exist_ok=True)
     image.save(destination)
 
@@ -103,6 +138,23 @@ def read_duration(audio_path: Path) -> float:
 
 
 def read_project_captions(project: Path) -> list[dict[str, object]]:
+    """Read spoken sentences, never chapter headings, for the subtitle lane."""
+    timeline = project / "timeline.csv"
+    if not timeline.is_file():
+        raise FileNotFoundError(f"缺少旁白字幕时间轴：{timeline}")
+    copy_path = project / "wenan.txt"
+    copy_lines = copy_path.read_text(encoding="utf-8-sig").splitlines() if copy_path.is_file() else []
+    captions = []
+    for text, start_ms, end_ms in read_subtitles(timeline, copy_lines):
+        chunks = split_subtitle_text(text, max_chars=26)
+        for chunk, (start, end) in zip(chunks, distribute_subtitle_timing(chunks, start_ms, end_ms)):
+            captions.append({"start": start / 1000, "end": end / 1000, "text": chunk})
+    if not captions:
+        raise ValueError(f"旁白字幕时间轴没有有效内容：{timeline}")
+    return captions
+
+
+def read_project_chapters(project: Path) -> list[dict[str, object]]:
     shot_path = project / "shot_timeline_source_time.csv"
     if not shot_path.is_file():
         return []
@@ -167,7 +219,9 @@ def build_nodes(
     if not asset_names:
         return []
     node_count = len(asset_names)
-    # A loose zig-zag path keeps the camera moving through a spatial story.
+    duration = max(1 / 30, float(duration))
+    # Place shot groups on a deterministic serpentine world grid. Effects may
+    # vary by shot, but layout coordinates never depend on random choices.
     nodes: list[dict[str, object]] = []
     caption_by_shot = {
         str(caption.get("shot_id", "")): caption
@@ -181,7 +235,7 @@ def build_nodes(
     shot_assets: dict[str, list[str]] = {}
     for asset in asset_names:
         timing = timings.get(asset, {})
-        shot_id = str(timing.get("shot_id", ""))
+        shot_id = str(timing.get("shot_id", "")).strip() or f"asset:{asset}"
         if shot_id not in shot_order:
             shot_order[shot_id] = len(shot_order)
         shot_assets.setdefault(shot_id, []).append(asset)
@@ -193,7 +247,7 @@ def build_nodes(
         title = str(caption.get("text", "")).replace("\n", " ").strip()
         shot_seed = f"{scene_seed}:{shot_id}:{title}:{','.join(group_assets)}"
         shot_effects[shot_id] = effect_for_caption(title, shot_order.get(shot_id, 0), shot_seed, previous_effect)
-        shot_layouts[shot_id] = layout_for_shot(shot_seed)
+        shot_layouts[shot_id] = layout_for_shot(shot_seed, len(group_assets))
         previous_effect = shot_effects[shot_id]
     for index, asset in enumerate(asset_names):
         timing = timings.get(asset, {})
@@ -202,26 +256,51 @@ def build_nodes(
             caption = captions[min(index, len(captions) - 1)] if captions else {}
         start = float(timing.get("start", caption.get("start", duration * index / max(1, node_count))))
         end = float(timing.get("end", caption.get("end", duration)))
+        start = max(0.0, min(duration - 1 / 30, start))
+        end = max(start + 1 / 30, min(duration, end))
         title = str(caption.get("text", "")).replace("\n", " ").strip()
-        shot_id = str(timing.get("shot_id", ""))
+        shot_id = str(timing.get("shot_id", "")).strip() or f"asset:{asset}"
         shot_index = shot_order.get(shot_id, index)
         group_assets = shot_assets.get(shot_id, [asset])
         within_shot = group_assets.index(asset)
         if within_shot + 1 < len(group_assets):
             next_start = float(timings.get(group_assets[within_shot + 1], {}).get("start", end))
+            next_start = max(0.0, min(duration, next_start))
             # Full-frame illustrations are alternatives, not transparent layers.
             # Keep a short overlap for a clean crossfade, then retire the old one.
-            end = min(end, next_start + 8 / 30)
-        x = 850 + shot_index * 1320
+            end = min(end, next_start + 8 / 30, duration)
+            end = max(start + 1 / 30, end)
+        # Shot groups follow a stable serpentine world route. Each stop has
+        # enough room for the widest supported composition.
+        row, column = divmod(shot_index, 3)
+        base_x = 1500 + column * 3300
+        if row % 2:
+            base_x = 1500 + (2 - column) * 3300
+        base_y = 760 + row * 2100
         layout = shot_layouts.get(shot_id, "center")
-        y = 520 + ((shot_index % 3) - 1) * 260
-        if layout == "low":
-            y += 110
-        elif layout == "high":
-            y -= 110
-        elif layout == "close":
-            y += 40
-        width = {"center": 1120, "wide": 1260, "low": 1080, "high": 1080, "close": 1320}.get(layout, 1120)
+        width = 1120
+        height = 760
+        # Pack the complete shot group from measured card widths. This keeps
+        # every image separated by a real gap instead of relying on a fixed
+        # center offset that becomes too small for wide illustrations.
+        group_gap = 180
+        if layout == "vertical":
+            x = base_x
+            group_height = len(group_assets) * height + max(0, len(group_assets) - 1) * group_gap
+            y = base_y - group_height / 2 + height / 2 + within_shot * (height + group_gap)
+        elif layout == "grid":
+            columns = 2
+            rows = (len(group_assets) + columns - 1) // columns
+            group_width = columns * width + (columns - 1) * group_gap
+            group_height = rows * height + (rows - 1) * group_gap
+            grid_column, grid_row = within_shot % columns, within_shot // columns
+            x = base_x - group_width / 2 + width / 2 + grid_column * (width + group_gap)
+            y = base_y - group_height / 2 + height / 2 + grid_row * (height + group_gap)
+        else:
+            group_width = len(group_assets) * width + max(0, len(group_assets) - 1) * group_gap
+            group_left = base_x - group_width / 2
+            x = group_left + width / 2 + within_shot * (width + group_gap)
+            y = base_y + (120 if layout == "staggered" and within_shot % 2 else 0)
         nodes.append({
             "asset": asset,
             "x": x,
@@ -238,6 +317,22 @@ def build_nodes(
             "role": str(timing.get("role", "")),
             "shot_id": shot_id,
         })
+    # Assign per image in playback order, not once per shot. Shot boundaries
+    # must not reset the shuffle and cause identical neighboring animations.
+    nodes.sort(key=lambda node: (node["start"], node["asset"]))
+    animations = varied_effect_sequence(IMAGE_ANIMATIONS, len(nodes), f"images:{scene_seed}")
+    transitions = varied_effect_sequence(TRANSITIONS, max(0, len(nodes) - 1), f"transitions:{scene_seed}")
+    camera_moves = varied_effect_sequence(CAMERA_MOVES, max(0, len(nodes) - 1), f"camera:{scene_seed}")
+    for index, node in enumerate(nodes):
+        animation = animations[index]
+        transition = transitions[index - 1] if index else "glide"
+        node["image_animation"] = animation
+        node["image_animation_frames"] = EFFECT_CATALOG["image_animations"][animation]["duration_frames"]
+        node["transition"] = transition
+        node["transition_frames"] = EFFECT_CATALOG["transitions"][transition]["duration_frames"] if index else 0
+        camera_move = camera_moves[index - 1] if index else "overview"
+        node["camera_move"] = camera_move
+        node["camera_frames"] = EFFECT_CATALOG["camera_moves"][camera_move]["duration_frames"]
     return nodes
 
 
@@ -256,14 +351,8 @@ def main() -> int:
         raise FileNotFoundError(f"没有找到图片素材：{project / 'generated_assets_plus'}")
     for old_asset in assets_dir.glob("*.png"):
         old_asset.unlink()
-    frames_dir = OUT / "frames"
-    if frames_dir.is_dir():
-        shutil.rmtree(frames_dir)
-    rendered_output = OUT / "infinite-canvas.mp4"
-    if rendered_output.exists():
-        rendered_output.unlink()
     for source in source_assets:
-        make_white_transparent(source, assets_dir / source.name)
+        prepare_asset(source, assets_dir / source.name)
     narration = project / "narration.wav"
     if not narration.is_file():
         raise FileNotFoundError(f"没有找到旁白：{narration}")
@@ -282,6 +371,7 @@ def main() -> int:
         return 0
     duration = read_duration(narration)
     captions = read_project_captions(project)
+    chapters = read_project_chapters(project)
     asset_timings = read_asset_timings(project)
     if not captions:
         captions = [{"start": 0.0, "end": duration, "text": args.title.strip() or project.parent.name}]
@@ -289,8 +379,9 @@ def main() -> int:
         "title": args.title.strip() or project.parent.name,
         "durationSeconds": duration,
         "captions": captions,
+        "chapters": chapters,
         "assets": asset_names,
-        "nodes": build_nodes(asset_names, captions, duration, asset_timings, args.title.strip() or project.parent.name),
+        "nodes": build_nodes(asset_names, chapters, duration, asset_timings, args.title.strip() or project.parent.name),
     }
     (PUBLIC / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2),

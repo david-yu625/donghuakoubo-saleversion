@@ -252,6 +252,26 @@ class GuiPipelineTest(unittest.TestCase):
             str(output_dir / "测试主题_landscape.mp4"),
         )
 
+    def test_infinite_canvas_uses_isolated_one_image_per_shot_materials(self):
+        commands, output_dir = build_commands(Options(
+            topic="娴嬭瘯涓婚",
+            story_world="",
+            target_chars="0",
+            orientation="妯睆",
+            render_mode="infinite_canvas",
+            run_copy=False,
+            run_voice=False,
+            run_shots=False,
+            run_layout=False,
+            run_draft=False,
+        ))
+        prompt_command = next(command for _label, command in commands if "src.05_generate_image_prompts" in command)
+        image_command = next(command for _label, command in commands if "src.06_generate_images" in command)
+        self.assertEqual(prompt_command[prompt_command.index("--prompt-output") + 1], str(output_dir / "image_prompts_remotion.csv"))
+        self.assertEqual(prompt_command[prompt_command.index("--asset-dir") + 1], str(output_dir / "generated_assets_remotion"))
+        self.assertEqual(prompt_command[prompt_command.index("--mode") + 1], "remotion")
+        self.assertEqual(image_command[3], str(output_dir / "image_prompts_remotion.csv"))
+
     def test_infinite_canvas_rejects_portrait_orientation(self):
         with self.assertRaisesRegex(ValueError, "只支持横版"):
             build_commands(Options(

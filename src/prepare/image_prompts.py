@@ -98,6 +98,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="", help="兼容参数；所有模型统一使用纯色背景提示词")
     parser.add_argument("--theme", default="white", help="固定为白色板书主题")
     parser.add_argument("--orientation", default="", help="画布方向：portrait/landscape 或 竖屏/横屏")
+    parser.add_argument(
+        "--mode",
+        choices=("jianying", "remotion"),
+        default="jianying",
+        help="素材策略；remotion 为每个场景输出一张合成图，剪映模式保持背景+元素多图",
+    )
     return parser.parse_args()
 
 
@@ -110,6 +116,8 @@ def main() -> int:
         prompt_output = args.prompt_output.expanduser().resolve() if args.prompt_output else element_csv.with_name("image_prompts_plus.csv")
         element_output = args.element_output.expanduser().resolve() if args.element_output else element_csv.with_name("element_timeline_with_assets.csv")
         rows = read_elements(element_csv)
+        if args.mode == "remotion":
+            rows = collapse_remotion_rows(rows)
         library_assets = scan_asset_library(args.asset_library.expanduser().resolve()) if args.image_source == "library" else []
         asset_dir.mkdir(parents=True, exist_ok=True)
         default_width, default_height = default_image_size(args.orientation)
@@ -158,6 +166,54 @@ def main() -> int:
     print(f"生图提示词 CSV: {prompt_output}")
     print(f"带素材路径元素 CSV: {element_output}")
     return 0
+
+
+def collapse_remotion_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Collapse one Jianying storyboard into one composite image per shot.
+
+    Step 04 still produces the detailed semantic plan. Remotion only needs a
+    single visual anchor per camera shot, so the image model receives the
+    background summary and all element descriptions in one prompt.
+    """
+    grouped: dict[str, list[dict[str, str]]] = {}
+    order: list[str] = []
+    for row in rows:
+        shot_id = row["shot_id"]
+        if shot_id not in grouped:
+            grouped[shot_id] = []
+            order.append(shot_id)
+        grouped[shot_id].append(row)
+
+    collapsed: list[dict[str, str]] = []
+    for shot_id in order:
+        shot_rows = grouped[shot_id]
+        background = next((row for row in shot_rows if row["role"] == "background"), None)
+        elements = [row for row in shot_rows if row["role"] == "element"]
+        if background is None and not elements:
+            raise ValueError(f"Shot {shot_id} 没有可用的视觉内容")
+        source = background or elements[0]
+        parts: list[str] = []
+        if background is not None:
+            parts.append(f"场景背景与标题：{_compact_remotion_text(background['content'], 170)}")
+        if elements:
+            descriptions = "；".join(_compact_remotion_text(row["content"], 120) for row in elements)
+            parts.append(f"同一画面中的主体和关系：{descriptions}")
+        content = _compact_remotion_text("；".join(parts), 500)
+        collapsed.append({
+            "element_id": f"s{shot_id}_img01",
+            "shot_id": shot_id,
+            "type": "image",
+            "role": "element",
+            "content": content,
+            "start_ms": source["start_ms"],
+            "end_ms": source["end_ms"],
+        })
+    return collapsed
+
+
+def _compact_remotion_text(value: str, limit: int) -> str:
+    value = visual_only_content(value)
+    return value if len(value) <= limit else value[: max(1, limit - 1)].rstrip("，。；、 ") + "…"
 
 
 def read_elements(path: Path) -> list[dict[str, str]]:

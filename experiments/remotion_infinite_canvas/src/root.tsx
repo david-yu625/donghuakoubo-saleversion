@@ -8,7 +8,7 @@ export const RemotionRoot: React.FC = () => {
     <Composition
       id="InfiniteCanvas"
       component={InfiniteCanvas}
-      durationInFrames={Math.round(manifest.durationSeconds * 30)}
+      durationInFrames={Math.max(1, Math.round(manifest.durationSeconds * 30))}
       fps={30}
       width={1920}
       height={1080}

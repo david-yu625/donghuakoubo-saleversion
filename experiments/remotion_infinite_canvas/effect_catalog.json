@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "transitions": {
+    "glide": {"label": "横向推移", "duration_frames": 26},
+    "drift": {"label": "纵向推移", "duration_frames": 28},
+    "push": {"label": "缩放推进", "duration_frames": 28},
+    "pull": {"label": "缩小展开", "duration_frames": 28},
+    "wipe_left": {"label": "横向擦除", "duration_frames": 24},
+    "wipe_up": {"label": "纵向擦除", "duration_frames": 24},
+    "iris": {"label": "圆形展开", "duration_frames": 30},
+    "arc": {"label": "弧线旋入", "duration_frames": 30}
+  },
+  "camera_moves": {
+    "pan": {"label": "拉远平移再推近", "duration_frames": 66},
+    "arc": {"label": "弧线绕行", "duration_frames": 72},
+    "crane": {"label": "升降转向", "duration_frames": 72},
+    "dolly": {"label": "纵深拉镜", "duration_frames": 78},
+    "overview": {"label": "全景过渡", "duration_frames": 84}
+  },
+  "image_animations": {
+    "rise": {"label": "向上浮入", "duration_frames": 42},
+    "slide_left": {"label": "左侧滑入", "duration_frames": 42},
+    "slide_right": {"label": "右侧滑入", "duration_frames": 42},
+    "scale": {"label": "由小放大", "duration_frames": 48},
+    "wipe": {"label": "横向揭示", "duration_frames": 40},
+    "unfold": {"label": "中间展开", "duration_frames": 44},
+    "tilt": {"label": "轻旋回正", "duration_frames": 48},
+    "flip": {"label": "立体翻入", "duration_frames": 48}
+  }
+}

@@ -340,6 +340,31 @@ def _find_windows_control(
     return None, None, None
 
 
+def _find_windows_home_window(auto, window_api: _WindowsWindowApi):
+    """Return the Jianying home window when export reuses the main HWND.
+
+    Some Windows builds close the editor/export dialog and immediately show
+    the draft list.  Those builds do not expose the usual export-success
+    button, so the draft-list marker is the completion signal instead.
+    """
+    for hwnd in _window_handles(JIANYING_PROCESS_NAME, window_api):
+        try:
+            window = auto.ControlFromHandle(hwnd)
+        except Exception:
+            continue
+        if window is None:
+            continue
+        marker = _find_named_control(
+            window,
+            ("HomePageDraft", "HomePageStartProjectDesp", "HomePageStartScriptDesp"),
+            timeout=0.15,
+            contains=True,
+        )
+        if marker is not None:
+            return hwnd, window
+    return None, None
+
+
 def _open_draft_windows(draft_path: Path, draft_name: str, *, timeout: float) -> Path:
     auto, window_api = _windows_helpers()
     handles = _window_handles(JIANYING_PROCESS_NAME, window_api)
@@ -1007,21 +1032,41 @@ def _click_export_windows(*, timeout: float) -> Path | None:
     except Exception as exc:
         raise JianyingAutomationError(f"点击最终导出失败：{exc}") from exc
 
-    success_hwnd, success_window, success_button = _find_windows_control(
-        auto,
-        window_api,
-        ("ExportSucceedCloseBtn", "ExportSuccessCloseBtn", "关闭导出", "完成"),
-        timeout=max(timeout, 1200.0),
-        contains=True,
-        preferred_hwnd=final_button_hwnd,
-    )
-    if success_button is None:
-        raise JianyingAutomationError("导出已开始，但等待导出完成超时")
-    _activate_window(success_hwnd, window_api)
-    try:
-        success_button.Click()
-    except Exception as exc:
-        raise JianyingAutomationError(f"关闭导出完成窗口失败：{exc}") from exc
+    # Most builds show a completion dialog. Newer builds instead return to the
+    # draft-list home window and omit that dialog entirely. Accept either
+    # signal, but require the home marker to remain visible briefly so a
+    # transient window replacement is not mistaken for a finished export.
+    completion_deadline = time.monotonic() + max(timeout, 1200.0)
+    success_hwnd = success_window = success_button = None
+    home_since: float | None = None
+    while time.monotonic() < completion_deadline:
+        success_hwnd, success_window, success_button = _find_windows_control(
+            auto,
+            window_api,
+            ("ExportSucceedCloseBtn", "ExportSuccessCloseBtn", "ExportComplete", "Complete"),
+            timeout=0.25,
+            contains=True,
+            preferred_hwnd=final_button_hwnd,
+        )
+        if success_button is not None:
+            _activate_window(success_hwnd, window_api)
+            try:
+                success_button.Click()
+            except Exception as exc:
+                raise JianyingAutomationError(f"Could not close export completion window: {exc}") from exc
+            break
+
+        home_hwnd, _home_window = _find_windows_home_window(auto, window_api)
+        if home_hwnd is not None:
+            if home_since is None:
+                home_since = time.monotonic()
+            elif time.monotonic() - home_since >= 2.0:
+                break
+        else:
+            home_since = None
+        time.sleep(0.4)
+    else:
+        raise JianyingAutomationError("Export started but did not reach a completion state before timeout")
 
     # Closing the editor returns to Jianying's still-running home window. Close
     # both windows so the UI action has the same end state as the macOS path.

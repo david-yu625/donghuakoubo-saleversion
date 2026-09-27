@@ -653,9 +653,9 @@ class PipelineWindow(QMainWindow):
         mode_layout.addWidget(render_label)
         self.render_mode_combo = QComboBox()
         self.render_mode_combo.addItem("剪映草稿（现有流程）", "jianying")
-        self.render_mode_combo.addItem("无限画布成片（实验）", "infinite_canvas")
+        self.render_mode_combo.addItem("Remotion 无限画布", "infinite_canvas")
         self.render_mode_combo.setFixedWidth(188)
-        self.render_mode_combo.setToolTip("默认使用现有剪映流程；无限画布只替换最终成片步骤，不改变前面的素材生成")
+        self.render_mode_combo.setToolTip("两种方式共用文案、配音、分镜和图片；只切换最终成片方式。Remotion 直接输出横版 MP4，剪映模式生成草稿")
         self.render_mode_combo.currentIndexChanged.connect(self._on_render_mode_changed)
         mode_layout.addWidget(self.render_mode_combo)
 
@@ -2441,7 +2441,7 @@ class PipelineWindow(QMainWindow):
             row.setVisible(visible)
         if self.steps_note is not None:
             self.steps_note.setText(
-                "共享 01～06 先准备文案、配音、分镜和图片；然后 07～10 依次准备素材、规划镜头、生成画面并合成视频。"
+                "两种成片方式共用文案、配音、分镜和图片；选择 Remotion 后，依次准备素材、规划无限画布镜头、渲染画面并合成横版 MP4。"
                 if infinite
                 else "图片素材会直接用于布局编译和剪映草稿生成。"
             )
@@ -2930,7 +2930,7 @@ class PipelineWindow(QMainWindow):
         }
         if key in infinite_stage_keys:
             if options.render_mode != "infinite_canvas":
-                QMessageBox.information(self, "当前不是无限画布", "请先在“成片方式”中选择“无限画布成片（实验）”。")
+                QMessageBox.information(self, "当前不是 Remotion 模式", "请先在“成片方式”中选择“Remotion 无限画布”。")
                 return
             options = replace(
                 options,
@@ -3090,7 +3090,9 @@ class PipelineWindow(QMainWindow):
         output = self.output_dir()
         draft_folder, draft_name = self._current_jianying_draft()
         render_mode = self.render_mode_combo.currentData() if self.render_mode_combo is not None else "jianying"
-        experiment = PROJECT_ROOT / "experiments" / "remotion_infinite_canvas"
+        # The existing UI mode remains “Remotion 无限画布”; its renderer now
+        # lives in the isolated scripted implementation.
+        experiment = PROJECT_ROOT / "experiments" / "remotion_scripted"
         return {
             "copy": output / "wenan.txt",
             "voice": output / "narration.wav",

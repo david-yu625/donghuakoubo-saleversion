@@ -1,0 +1,24 @@
+{
+  "name": "donghuakoubo-remotion-scripted",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build:project": "python scripts/build_project.py",
+    "studio": "remotion studio src/index.ts",
+    "render:frames": "remotion render src/index.ts ScriptedCanvas out/frames --sequence --image-format=jpeg --jpeg-quality=95 --overwrite",
+    "encode": "python scripts/encode.py",
+    "render": "npm run render:frames && npm run encode",
+    "render:frame": "remotion still src/index.ts ScriptedCanvas out/preview.png --frame=360",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@remotion/media": "4.0.526",
+    "remotion": "4.0.526"
+  },
+  "devDependencies": {
+    "@remotion/cli": "4.0.526",
+    "@types/react": "19.2.3",
+    "@types/react-dom": "19.2.3",
+    "typescript": "5.9.3"
+  }
+}
