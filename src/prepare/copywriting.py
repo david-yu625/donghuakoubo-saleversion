@@ -12,6 +12,7 @@ from pathlib import Path
 from openai import OpenAI, OpenAIError
 
 from ..env import load_env_file
+from ..industry_profiles import DEFAULT_INDUSTRY, industry_prompt, resolve_industry
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_OUTPUT_ROOT = PROJECT_ROOT / "output"
@@ -22,8 +23,8 @@ DEFAULT_CHAR_BUDGET = 18000
 
 SYSTEM_PROMPT = """
 #背景
-1.你是一名计算机资深从业者，从事多年软件技术研发。
-2.现在想做抖音自媒体短视频。通过将计算机无聊的知识以专业但简易的方式讲出来。
+1.你是一名行业知识科普作者，负责把专业知识用准确、易懂的方式讲清楚。
+2.现在想做抖音自媒体短视频。通过把当前行业中的复杂知识讲成普通用户能理解、能行动的内容。
 
 #目标
  需要你根据主题帮我生成文案。
@@ -77,6 +78,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--target-chars", type=int, default=700, help="文案最长字数；0 表示不限制。")
     parser.add_argument("--story-world", default="", help="可选故事载体，例如快递站、图书馆、工厂、餐馆；留空或填写自动选择时由模型判断是否需要。")
     parser.add_argument("--context", default="", help="补充主题背景、概念定义或行文思路，帮助模型避免歧义。")
+    parser.add_argument("--industry", default=DEFAULT_INDUSTRY, help="内容行业")
     parser.add_argument("--api-key", default="", help="默认读取 DEEPSEEK_API_KEY")
     parser.add_argument("--model", default="", help=f"默认读取 DEEPSEEK_MODEL 或 {DEFAULT_MODEL}")
     parser.add_argument("--base-url", default="", help="默认 DeepSeek OpenAI 兼容地址")
@@ -101,6 +103,7 @@ def main() -> int:
             target_chars=args.target_chars,
             story_world=args.story_world,
             context=args.context,
+            industry=args.industry,
         )
         wenan = clean_wenan(str(payload["wenan"]))
     except (KeyError, ValueError, RuntimeError, OpenAIError) as exc:
@@ -123,12 +126,13 @@ def generate_copywriting(
     target_chars: int,
     story_world: str,
     context: str = "",
+    industry: str = DEFAULT_INDUSTRY,
 ) -> dict[str, object]:
     if not api_key:
         raise ValueError("缺少 DEEPSEEK_API_KEY")
     client = OpenAI(api_key=api_key, base_url=base_url)
     del reference, story_world
-    system_prompt = build_system_prompt(topic)
+    system_prompt = build_system_prompt(topic, industry)
     user_prompt = "\n\n".join([
         context_guidance(context, topic),
         length_guidance(target_chars),
@@ -272,11 +276,12 @@ def validate_copywriting_text(text: str, target_chars: int = 0) -> None:
         raise ValueError("文案包含重复行")
 
 
-def build_system_prompt(topic: str) -> str:
+def build_system_prompt(topic: str, industry: str = DEFAULT_INDUSTRY) -> str:
     """Insert the active topic into the initialization section sent to the model."""
 
     return "\n\n".join([
         SYSTEM_PROMPT,
+        "#行业设定\n" + industry_prompt(industry),
         "#初始化",
         f"    1.我要讲解的题目是“{topic}”。",
     ])

@@ -11,6 +11,7 @@ from pathlib import Path
 from openai import OpenAI
 
 from ..env import load_env_file
+from ..industry_profiles import DEFAULT_INDUSTRY, industry_prompt, resolve_industry
 from .copywriting import extract_json_object, repair_json_string_syntax, strip_code_fence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -25,7 +26,7 @@ TOPIC_SYSTEM_PROMPT = """
 好选题必须满足：
 - 能回答一个明确问题，而不是“介绍某某领域”或“盘点几个方向”。
 - 能讲清一个真实机制、判断方法、常见误区、失败原因或具体因果链。
-- 来自普通用户在工作、学习、生活或使用软件时会遇到的任务、故障、选择或困惑。
+- 来自目标行业普通用户在工作、学习、生活或具体使用场景中会遇到的任务、故障、选择或困惑。
 - 用户看完后能立刻获得实际帮助：完成一项操作、解决一个问题、作出更好的选择、避开一个风险、提高效率，或理解异常现象后知道下一步怎么做。
 - 即使讲概念或底层机制，也必须落到一个可执行的判断、操作建议或验证方法，不能只增加知识而不解决问题。
 - 标题具体、自然、不过度夸张；可以使用问题句，但不要机械套格式。
@@ -282,6 +283,7 @@ def _candidate_is_usable(candidate: dict[str, object]) -> bool:
 
 def generate_unique_topic(
     *,
+    industry: str = DEFAULT_INDUSTRY,
     direction: str = "",
     context: str = "",
     api_key: str = "",
@@ -296,6 +298,7 @@ def generate_unique_topic(
 ) -> str:
     load_env_file(PROJECT_ROOT / ".env")
     direction = direction.strip()
+    industry_profile = resolve_industry(industry)
     context = context.strip()
     if len(direction) > 200:
         raise ValueError("选题方向不能超过 200 个字符")
@@ -329,13 +332,13 @@ def generate_unique_topic(
         "优先选择用户真实会遇到、看完后能解决问题或立即采取行动的细节，不要只做知识介绍。\n"
         "不要把大方向本身当作主题，不要扩展到无关领域；标题中应能看出它与该方向的直接关系。\n\n"
         if direction
-        else "优先选择计算机或科技领域中能讲清具体机制、真实场景和判断方法的问题。\n\n"
+        else f"优先选择{industry_profile.label}领域中能讲清具体机制、真实场景和判断方法的问题。\n\n"
     )
     context_prompt = (
         f"用户补充的上下文/行文思路是：{context}\n"
         "上下文中的术语、隐喻和限定条件必须优先遵守；如果存在歧义，以用户上下文为准，不要擅自按字面扩展到无关领域。\n\n"
         if context else
-        "用户没有补充上下文，请默认面向普通电脑和科技产品用户，优先选择能解决真实问题的主题。\n\n"
+        f"用户没有补充上下文，请默认面向{industry_profile.audience}，优先选择能解决真实问题的主题。\n\n"
     )
     current_topic_prompt = (
         f"当前编辑中的主题是：{current_topic}\n"
@@ -344,7 +347,8 @@ def generate_unique_topic(
         else ""
     )
     user_prompt = (
-        direction_prompt
+        "#行业设定\n" + industry_prompt(industry) + "\n\n"
+        + direction_prompt
         + context_prompt
         + current_topic_prompt
         + "请提出 6 个候选主题并按综合评分从高到低排列。以下主题已经生成过或使用过，不能重复，也不能只换同义词：\n"
@@ -401,6 +405,7 @@ def generate_unique_topic(
 def generate_unique_topics(
     count: int,
     *,
+    industry: str = DEFAULT_INDUSTRY,
     direction: str = "",
     context: str = "",
     api_key: str = "",
@@ -417,6 +422,7 @@ def generate_unique_topics(
         raise ValueError("批量主题数量必须在 1 到 30 之间")
     load_env_file(PROJECT_ROOT / ".env")
     direction = direction.strip()
+    industry_profile = resolve_industry(industry)
     context = context.strip()
     current_topic = current_topic.strip()
     if len(direction) > 200:
@@ -442,13 +448,13 @@ def generate_unique_topics(
         f"用户指定的选题大方向是：{direction}\n"
         "所有主题都必须直接属于这个方向，并下钻到不同的具体问题、机制、操作细节、判断方法、常见误区或失败原因。\n\n"
         if direction
-        else "优先选择计算机或科技领域中能讲清具体机制、真实场景和判断方法的问题。\n\n"
+        else f"优先选择{industry_profile.label}领域中能讲清具体机制、真实场景和判断方法的问题。\n\n"
     )
     context_prompt = (
         f"用户补充的上下文/行文思路是：{context}\n"
         "上下文中的术语、隐喻和限定条件必须优先遵守。\n\n"
         if context
-        else "用户没有补充上下文，默认面向普通电脑和科技产品用户。\n\n"
+        else f"用户没有补充上下文，默认面向{industry_profile.audience}。\n\n"
     )
     current_topic_prompt = (
         f"当前编辑中的主题是：{current_topic}\n新主题不能复述它。\n\n"
@@ -463,7 +469,8 @@ def generate_unique_topics(
         else ""
     )
     user_prompt = (
-        direction_prompt
+        "#行业设定\n" + industry_prompt(industry) + "\n\n"
+        + direction_prompt
         + context_prompt
         + current_topic_prompt
         + f"这是一次批量生成请求。最终需要 {count} 个互不相似的主题。"

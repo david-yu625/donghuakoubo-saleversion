@@ -9,7 +9,6 @@
 ├── src/       主程序、布局、视觉导演、剪映渲染和测试
 ├── audio/               通用背景音乐和入场音效素材
 ├── picturies/           默认背景和界面预览素材
-├── reference_example/   示例视频文件
 ├── mg_asset_library/    可选图片素材库（当前仓库未内置）
 ├── output/              用户项目与生成结果
 ├── vendor/              pyJianYingDraft 依赖源码
@@ -50,6 +49,18 @@ py -3 -m src
 ```
 
 也可以直接运行根目录对应的启动脚本。
+
+## 客户版发包
+
+发版工具位于 `tools/release/`，授权签发工具位于独立的 `tools/license/`。分别在目标系统上执行：
+
+推荐直接双击 `tools/release/start_release.command`（macOS）或 `tools/release/start_release.bat`（Windows）打开图形化发版工具。
+
+```bash
+python3 tools/release/build_release.py --clean
+```
+
+Windows 版本必须在 Windows 上构建，macOS 版本必须在 macOS 上构建。客户包使用 PyInstaller，默认不包含项目 `.py` 源文件；但任何本地 Python 程序都无法做到绝对不可逆，私钥、`.env`、`settings.json` 和 `output/` 不得进入客户包。
 
 ## 主流程
 

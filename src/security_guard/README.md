@@ -18,7 +18,7 @@
 首次发布时生成一套密钥：
 
 ```bash
-python3 -m src.security_guard.generate_keys \
+python3 -m tools.license.generate_keys \
   --output-dir "$HOME/.donghuakoubo-release"
 ```
 
@@ -32,7 +32,7 @@ python3 -m src.security_guard.generate_keys \
 客户首次打开软件时会看到机器码。客户把机器码发给你后，在自己的电脑上签发：
 
 ```bash
-python3 -m src.security_guard \
+python3 -m tools.license.issue_license \
   --private-key "$HOME/.donghuakoubo-release/private_key.pem" \
   --machine-code CLIENT_MACHINE_CODE \
   --customer "客户名称" \
@@ -47,11 +47,12 @@ python3 -m src.security_guard \
 
 卖家不需要执行命令。双击项目里的：
 
-- macOS：`tools/start_license_issuer.command`
-- Windows：`tools/start_license_issuer.bat`
+- macOS：`tools/license/start_license_issuer.command`
+- Windows：`tools/license/start_license_issuer.bat`
 
 这个窗口只在卖家电脑上使用。客户版不应包含 `tools/` 目录、
-`issuer_dialog.py`、`issue_license.py`、`generate_keys.py` 或私钥文件；
+`tools/license/issuer_dialog.py`、`tools/license/issue_license.py`、
+`tools/license/generate_keys.py` 或私钥文件；
 客户版只保留许可证验证和导入功能。
 
 ## 设计边界

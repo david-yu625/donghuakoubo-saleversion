@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = (
+    Path(os.environ["DONGHUA_PROJECT_ROOT"]).expanduser().resolve()
+    if os.environ.get("DONGHUA_PROJECT_ROOT")
+    else Path(sys.executable).resolve().parent
+    if getattr(sys, "frozen", False)
+    else Path(__file__).resolve().parents[1]
+)
 APP_SETTINGS_PATH = PROJECT_ROOT / "settings.json"
 APP_SETTING_KEYS = (
+    "INDUSTRY",
     "VISUAL_THEME",
     "TITLE_COLOR",
     "TITLE_BACKGROUND_COLOR",

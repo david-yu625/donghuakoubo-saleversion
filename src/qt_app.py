@@ -51,6 +51,7 @@ from .app_settings import (
     save_app_settings,
 )
 from .env import load_env_file
+from .industry_profiles import DEFAULT_INDUSTRY, INDUSTRY_CHOICES, resolve_industry
 from .core.speech_metrics import (
     count_speech_chars,
     estimate_speech_duration_range,
@@ -109,6 +110,7 @@ from .pipeline_runtime import (
     build_batch_options,
     build_cover_command,
     build_image_regeneration_command,
+    module_command,
     build_portrait_package_command,
     default_background_image,
     resolve_visual_theme,
@@ -121,7 +123,6 @@ from .pipeline_runtime import (
 from .prepare.cover import (
     COVER_SIZE_OPTIONS,
     DEFAULT_COVER_SIZE_KEY,
-    build_cover_prompt,
     resolve_cover_size,
 )
 from .prepare.copywriting import revise_copywriting
@@ -183,6 +184,7 @@ QComboBox QAbstractItemView {
     color: #f3f4f6; background: #171a20; border: 1px solid #303641;
     selection-background-color: #315a9b;
 }
+QComboBox#lockedMode::drop-down { width: 0; }
 QPushButton {
     min-height: 34px; padding: 0 14px; color: #dce1e8;
     background: #252a33; border: 1px solid #343b47; border-radius: 4px;
@@ -266,26 +268,17 @@ RERUN_ACTIONS = {
     "images": "重新生成图片",
     "layout": "重新编译布局",
     "draft": "重新生成草稿",
-    "infinite_prepare": "重新准备素材",
-    "infinite_plan": "重新生成规划",
-    "infinite_frames": "重新渲染画面",
-    "infinite_encode": "重新编码成片",
 }
 
 UI_STEP_DEFS = (*STEP_DEFS, ("automation", "09 剪映导出", "", "执行剪映导出", ""))
-INFINITE_STAGE_DEFS = (
-    ("infinite_prepare", "07 准备素材", "out/source.json", "整理图片、配音和分镜", ""),
-    ("infinite_plan", "08 规划镜头", "public/manifest.json", "决定画面位置和镜头运动", ""),
-    ("infinite_frames", "09 生成画面", "out/frames", "按规划渲染动画帧", ""),
-    ("infinite_encode", "10 合成视频", "", "把画面帧和配音合成 MP4", ""),
-)
-INFINITE_STAGE_DESCRIPTIONS = {
-    "infinite_prepare": "把共享步骤生成的图片、配音和分镜整理成无限画布能读取的素材。不会生成新图片。",
-    "infinite_plan": "决定每张图片放在大画布的什么位置，并规划推近、拉远、移动和字幕时间。",
-    "infinite_frames": "按照空间规划逐帧生成动画画面。此时得到的是一组 JPEG 帧，还不是最终视频。",
-    "infinite_encode": "把动画帧和旁白编码成最终 MP4，并写入当前主题的 output 目录。",
+HIDDEN_VIEW_BUTTON_KEYS = {
+    "voice",
+    "shots",
+    "storyboard_prompts",
+    "prompts",
+    "images",
 }
-ALL_STEP_DEFS = (*STEP_DEFS, ("automation", "09 剪映导出", "", "执行剪映导出", ""), *INFINITE_STAGE_DEFS)
+ALL_STEP_DEFS = (*STEP_DEFS, ("automation", "09 剪映导出", "", "执行剪映导出", ""))
 
 
 class PreviewImageLabel(QLabel):
@@ -404,7 +397,6 @@ class PipelineWindow(QMainWindow):
         self.douyin_topics_input: QLineEdit | None = None
         self.douyin_collection_input: QLineEdit | None = None
         self.douyin_metadata_button: QPushButton | None = None
-        self.douyin_description_input: QPlainTextEdit | None = None
         self.douyin_open_button: QPushButton | None = None
         self.douyin_publish_button: QPushButton | None = None
         self.douyin_auto_publish_checkbox: QCheckBox | None = None
@@ -427,20 +419,16 @@ class PipelineWindow(QMainWindow):
         self._batch_package_index = -1
         self._batch_package_phase = ""
         self.continue_button: QPushButton | None = None
-        self.workflow_group: QComboBox | None = None
         self.workflow_mode: QComboBox | None = None
         self.workflow_tabs: QTabWidget | None = None
         self.workflow_stage_buttons: dict[str, QPushButton] = {}
         self.workflow_stage_status_labels: dict[str, QLabel] = {}
-        self.video_mode_buttons: dict[str, QPushButton] = {}
         self.video_mode_bar: QWidget | None = None
         self.video_mode_combo: QComboBox | None = None
-        self.render_mode_combo: QComboBox | None = None
         self.workflow_actions: QFrame | None = None
         self.cover_panel: QFrame | None = None
         self.cover_size_combo: QComboBox | None = None
         self.cover_canvas_label: QLabel | None = None
-        self.cover_prompt_preview: QPlainTextEdit | None = None
         self.cover_output_label: QLabel | None = None
         self.cover_status_label: QLabel | None = None
         self.cover_view_button: QPushButton | None = None
@@ -648,19 +636,12 @@ class PipelineWindow(QMainWindow):
         self.video_mode_combo = QComboBox()
         for label, mode in video_modes:
             self.video_mode_combo.addItem(label, mode)
+        self.video_mode_combo.setObjectName("lockedMode")
         self.video_mode_combo.setFixedWidth(236)
+        self.video_mode_combo.setToolTip("当前固定使用横版母片")
         self.video_mode_combo.currentIndexChanged.connect(self._change_video_mode_from_combo)
+        self._lock_mode_control(self.video_mode_combo, WORKFLOW_LANDSCAPE)
         mode_layout.addWidget(self.video_mode_combo)
-        render_label = self._form_label("成片方式", width=68)
-        mode_layout.addWidget(render_label)
-        self.render_mode_combo = QComboBox()
-        self.render_mode_combo.addItem("剪映草稿（现有流程）", "jianying")
-        self.render_mode_combo.addItem("Remotion 无限画布", "infinite_canvas")
-        self.render_mode_combo.setFixedWidth(188)
-        self.render_mode_combo.setToolTip("两种方式共用文案、配音、分镜和图片；只切换最终成片方式。Remotion 直接输出横版 MP4，剪映模式生成草稿")
-        self.render_mode_combo.currentIndexChanged.connect(self._on_render_mode_changed)
-        mode_layout.addWidget(self.render_mode_combo)
-
         actions = QFrame()
         actions.setObjectName("workflowActions")
         self.workflow_actions = actions
@@ -684,6 +665,20 @@ class PipelineWindow(QMainWindow):
         layout.addWidget(self.workflow_tabs, 1)
         return workspace
 
+    def _lock_mode_control(self, combo: QComboBox, value: str) -> None:
+        """Keep a mode combo visible while preventing user selection."""
+        index = combo.findData(value)
+        if index >= 0:
+            combo.blockSignals(True)
+            combo.setCurrentIndex(index)
+            combo.blockSignals(False)
+        combo.setFocusPolicy(Qt.NoFocus)
+        combo.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+    def _lock_fixed_mode_controls(self) -> None:
+        if self.video_mode_combo is not None:
+            self._lock_mode_control(self.video_mode_combo, WORKFLOW_LANDSCAPE)
+
     def _build_project_panel(self) -> QFrame:
         self.project_toggle_button = QToolButton()
         self.project_toggle_button.setArrowType(Qt.DownArrow)
@@ -700,7 +695,8 @@ class PipelineWindow(QMainWindow):
         topic_label = self._form_label("主题")
         self.project_labels["topic"] = topic_label
         topic_row.addWidget(topic_label)
-        self.inputs["topic"] = QLineEdit("什么是知识传递")
+        self.inputs["topic"] = QLineEdit()
+        self.inputs["topic"].setPlaceholderText("例如：什么是知识传递")
         self.inputs["topic"].setMinimumWidth(320)
         topic_row.addWidget(self.inputs["topic"], 1)
         self.topic_catalog_button = self._button(
@@ -746,11 +742,22 @@ class PipelineWindow(QMainWindow):
         form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
+        industry_label = self._form_label("内容行业")
+        self.project_labels["industry"] = industry_label
+        industry_combo = QComboBox()
+        industry_combo.addItems([label for label, _key in INDUSTRY_CHOICES])
+        industry_combo.setCurrentText(
+            resolve_industry(self.app_settings.get("INDUSTRY", DEFAULT_INDUSTRY)).label
+        )
+        industry_combo.setToolTip("选择内容所属行业，文案、分镜、图片、封面和发布信息会使用对应行业设定")
+        self.setting_combos["INDUSTRY"] = industry_combo
+        form.addRow(industry_label, industry_combo)
+
         direction_label = self._form_label("选题方向")
         self.project_labels["topic_direction"] = direction_label
         self.inputs["topic_direction"] = QLineEdit()
         self.inputs["topic_direction"].setPlaceholderText(
-            "可选，例如：计算机操作系统、数据库、人工智能、大模型"
+            "可选，例如：具体问题、使用场景、常见误区"
         )
         self.batch_topic_generate_button = self._button(
             "批量生成主题",
@@ -806,7 +813,8 @@ class PipelineWindow(QMainWindow):
 
         draft_label = self._form_label("草稿名")
         self.project_labels["draft_name"] = draft_label
-        self.inputs["draft_name"] = QLineEdit(f"什么是知识传递_{self.draft_timestamp}")
+        self.inputs["draft_name"] = QLineEdit()
+        self.inputs["draft_name"].setPlaceholderText("留空则根据主题和时间自动命名")
         form.addRow(draft_label, self.inputs["draft_name"])
 
         self.inputs["target_chars"].textChanged.connect(self._update_duration_estimate)
@@ -814,10 +822,10 @@ class PipelineWindow(QMainWindow):
 
         self.inputs["topic"].textChanged.connect(self._update_automatic_draft_name)
         self.inputs["topic"].textChanged.connect(self._update_package_project_label)
-        self.inputs["topic"].textChanged.connect(self._update_cover_prompt_preview)
+        self.inputs["topic"].textChanged.connect(self._update_cover_panel)
         self.inputs["topic"].textChanged.connect(self._update_publish_title)
         self.inputs["topic"].textChanged.connect(self._on_workspace_topic_changed)
-        self.context_input.textChanged.connect(self._update_cover_prompt_preview)
+        self.context_input.textChanged.connect(self._update_cover_panel)
         self.inputs["draft_name"].textEdited.connect(self._mark_draft_name_custom)
         batch_label = self._form_label("批量主题", top=True)
         self.batch_topics = QPlainTextEdit()
@@ -842,10 +850,6 @@ class PipelineWindow(QMainWindow):
         layout.addWidget(self.project_panel_body)
         panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         return panel
-
-    def _change_workflow_group(self, group: str) -> None:
-        """Compatibility wrapper for switching one of the three theme stages."""
-        self._select_workflow_stage(group)
 
     def _select_workflow_stage(self, stage: str) -> None:
         if self.workflow_mode is None:
@@ -887,14 +891,13 @@ class PipelineWindow(QMainWindow):
         selected_stage = "视频制作" if video else ("作品资产" if mode == WORKFLOW_COVER else "作品发布")
         for stage, button in self.workflow_stage_buttons.items():
             button.setChecked(stage == selected_stage)
-        for value, button in self.video_mode_buttons.items():
-            button.setChecked(value == mode)
         if self.video_mode_combo is not None:
             combo_index = self.video_mode_combo.findData(mode)
             if combo_index >= 0 and combo_index != self.video_mode_combo.currentIndex():
                 self.video_mode_combo.blockSignals(True)
                 self.video_mode_combo.setCurrentIndex(combo_index)
                 self.video_mode_combo.blockSignals(False)
+        self._lock_fixed_mode_controls()
         if self.video_mode_bar is not None:
             self.video_mode_bar.setVisible(video)
 
@@ -923,6 +926,7 @@ class PipelineWindow(QMainWindow):
         if not self._can_start_topic_generation():
             return
         direction = self.inputs["topic_direction"].text().strip()
+        industry = resolve_industry(self.setting_combos["INDUSTRY"].currentText()).key
         current_topic = self.inputs["topic"].text().strip()
         context = self.context_input.toPlainText().strip() if self.context_input is not None else ""
         count, accepted = QInputDialog.getInt(
@@ -941,13 +945,18 @@ class PipelineWindow(QMainWindow):
 
         def worker() -> None:
             try:
+                generation_kwargs = {
+                    "direction": direction,
+                    "context": context,
+                    "current_topic": current_topic,
+                    "progress_callback": self.topic_generation_progress.emit,
+                }
+                if industry != DEFAULT_INDUSTRY:
+                    generation_kwargs["industry"] = industry
                 self.batch_topics_generated.emit(
                     generate_unique_topics(
                         count,
-                        direction=direction,
-                        context=context,
-                        current_topic=current_topic,
-                        progress_callback=self.topic_generation_progress.emit,
+                        **generation_kwargs,
                     )
                 )
             except Exception as exc:
@@ -1001,7 +1010,10 @@ class PipelineWindow(QMainWindow):
 
     def _update_automatic_draft_name(self, topic: str) -> None:
         if self.draft_name_is_automatic:
-            self.inputs["draft_name"].setText(f"{safe_topic(topic)}_{self.draft_timestamp}")
+            topic = topic.strip()
+            self.inputs["draft_name"].setText(
+                f"{safe_topic(topic)}_{self.draft_timestamp}" if topic else ""
+            )
 
     def _mark_draft_name_custom(self, _text: str) -> None:
         self.draft_name_is_automatic = False
@@ -1145,19 +1157,13 @@ class PipelineWindow(QMainWindow):
         self.cover_size_combo.setCurrentIndex(
             max(0, self.cover_size_combo.findData(DEFAULT_COVER_SIZE_KEY))
         )
-        self.cover_size_combo.currentIndexChanged.connect(self._update_cover_prompt_preview)
+        self.cover_size_combo.currentIndexChanged.connect(self._update_cover_panel)
         self.cover_size_combo.setMaximumWidth(320)
         form.addRow(self._form_label("画布尺寸", width=92), self.cover_size_combo)
 
         self.cover_canvas_label = QLabel()
         self.cover_canvas_label.setObjectName("muted")
         form.addRow(self._form_label("画布", width=92), self.cover_canvas_label)
-
-        self.cover_prompt_preview = QPlainTextEdit()
-        self.cover_prompt_preview.setReadOnly(True)
-        self.cover_prompt_preview.setFixedHeight(180)
-        self.cover_prompt_preview.setPlaceholderText("填写主题后，这里会显示封面生成提示词。")
-        form.addRow(self._form_label("封面提示词", width=92, top=True), self.cover_prompt_preview)
 
         self.cover_output_label = QLabel()
         self.cover_output_label.setObjectName("muted")
@@ -1200,7 +1206,7 @@ class PipelineWindow(QMainWindow):
 
         layout.addLayout(form)
         layout.addStretch()
-        self._update_cover_prompt_preview()
+        self._update_cover_panel()
         self.cover_panel = panel
         return panel
 
@@ -1245,20 +1251,14 @@ class PipelineWindow(QMainWindow):
         form.addRow(self._form_label("作品标题", width=92), self.douyin_title_input)
 
         self.douyin_topics_input = QLineEdit()
-        self.douyin_topics_input.setPlaceholderText("多个话题用空格或逗号分隔，例如：人工智能 计算机知识")
-        self.douyin_topics_input.setToolTip("桌面端会将这些 #话题写入抖音作品描述框，并按空格让抖音识别为话题标签")
+        self.douyin_topics_input.setPlaceholderText("多个话题用空格或逗号分隔，例如：行业知识 实用技巧")
+        self.douyin_topics_input.setToolTip("桌面端会将这些 #话题写入作品信息，并按空格让抖音识别为话题标签")
         form.addRow(self._form_label("话题标签", width=92), self.douyin_topics_input)
 
         self.douyin_collection_input = QLineEdit(DEFAULT_DOUYIN_COLLECTION)
         self.douyin_collection_input.setPlaceholderText("发布时加入的合集名称")
-        self.douyin_collection_input.setToolTip("发布时会自动选择这个合集；默认：计算机小常识")
+        self.douyin_collection_input.setToolTip("发布时会自动选择这个合集")
         form.addRow(self._form_label("合集", width=92), self.douyin_collection_input)
-
-        self.douyin_description_input = QPlainTextEdit()
-        self.douyin_description_input.setObjectName("contextInput")
-        self.douyin_description_input.setFixedHeight(72)
-        self.douyin_description_input.setPlaceholderText("可选：作品简介。桌面端会将上方话题追加到这个描述框")
-        form.addRow(self._form_label("作品描述", width=92, top=True), self.douyin_description_input)
 
         metadata_row = QWidget()
         metadata_row.setObjectName("formField")
@@ -1348,16 +1348,6 @@ class PipelineWindow(QMainWindow):
                 )
                 run.setToolTip("打开当前剪映草稿并点击导出（支持 Windows 和 macOS）")
                 self.automation_step_button = run
-            elif key.startswith("infinite_"):
-                run, action_label = self._described_button(
-                    action,
-                    INFINITE_STAGE_DESCRIPTIONS[key],
-                    lambda checked=False, k=key: self.run_single_step(k),
-                )
-                self.run_button_labels[key] = action_label
-                run.setToolTip(
-                    f"只执行当前步骤：{title}。完成后可在右侧查看产物状态，再继续下一步。"
-                )
             elif key in STEP_BUTTON_DESCRIPTIONS:
                 run, action_label = self._described_button(
                     action,
@@ -1376,9 +1366,14 @@ class PipelineWindow(QMainWindow):
                 )
             if key == "automation":
                 run.setFixedWidth(420)
+            elif key in HIDDEN_VIEW_BUTTON_KEYS:
+                # The secondary inspection actions are kept in code for
+                # compatibility, but the production view gives the main
+                # action the freed space.
+                run.setFixedWidth(204 if key == "images" else 420)
             else:
                 run.setFixedWidth(148 if key == "images" else (420 if not view_action else 204))
-            if key in STEP_BUTTON_DESCRIPTIONS or key.startswith("infinite_"):
+            if key in STEP_BUTTON_DESCRIPTIONS:
                 # Described actions contain two text columns.  Leave enough
                 # vertical room for wrapped Chinese copy instead of allowing
                 # the description to paint over the neighboring row.
@@ -1393,11 +1388,12 @@ class PipelineWindow(QMainWindow):
                     QStyle.SP_ArrowForward,
                     lambda checked=False: self.run_single_step("images", overwrite_images=False),
                 )
-                self.image_missing_button.setFixedWidth(148)
+                self.image_missing_button.setFixedWidth(204)
                 row_layout.addWidget(self.image_missing_button)
             if view_action:
                 view = self._button(view_action, QStyle.SP_FileDialogDetailedView, lambda checked=False, k=key: self.show_artifact(k))
                 view.setFixedWidth(148 if key == "images" else 204)
+                view.setVisible(key not in HIDDEN_VIEW_BUTTON_KEYS)
                 row_layout.addWidget(view)
                 self.view_buttons[key] = view
             layout.addWidget(row)
@@ -1815,15 +1811,13 @@ class PipelineWindow(QMainWindow):
         ).start()
 
     def _preview_voice_worker(self, speaker: str, output: Path) -> None:
-        command = [
-            sys.executable,
-            "-m",
+        command = module_command(
             "src.commands.preview_voice",
             "--speaker",
             speaker,
             "--output",
-            str(output),
-        ]
+            output,
+        )
         try:
             subprocess.run(
                 command,
@@ -1982,9 +1976,6 @@ class PipelineWindow(QMainWindow):
         if self.runner.running:
             QMessageBox.information(self, "正在运行", "请等待第 01～08 步完成后再执行第 09 步。")
             return
-        if self.render_mode_combo is not None and self.render_mode_combo.currentData() == "infinite_canvas":
-            QMessageBox.information(self, "无限画布无需剪映导出", "当前成片已由 Remotion 直接生成 MP4，不需要打开剪映导出。")
-            return
         self._start_jianying_automation()
         self.refresh_status()
 
@@ -2087,10 +2078,10 @@ class PipelineWindow(QMainWindow):
         self.inputs["draft_name"].setText(options.draft_name)
         self._remember_draft_target_for_options(options)
         self._automation_last_status = "未执行"
-        self._chain_portrait_after_export = options.render_mode == "jianying"
+        self._chain_portrait_after_export = True
         self._portrait_chain_attempts = 0
         self._batch_package_phase = "landscape"
-        self._auto_run_step09 = options.render_mode == "jianying"
+        self._auto_run_step09 = True
         if self.workflow_tabs is not None:
             self.workflow_tabs.setCurrentIndex(0)
         self.batch_status_label.setText(
@@ -2228,12 +2219,13 @@ class PipelineWindow(QMainWindow):
             QMessageBox.information(self, "缺少主题", "请先填写当前主题。")
             return
         context = self._publish_metadata_context(topic)
+        industry = resolve_industry(self.setting_combos["INDUSTRY"].currentText()).key
         self.log.appendPlainText("正在生成抖音标题和相关话题...")
         self._set_douyin_metadata_enabled(False)
 
         def worker() -> None:
             try:
-                title, topics = generate_publish_metadata(topic, context=context)
+                title, topics = generate_publish_metadata(topic, industry=industry, context=context)
                 self.douyin_metadata_succeeded.emit((title, topics))
             except Exception as exc:
                 self.douyin_metadata_failed.emit(str(exc))
@@ -2313,7 +2305,6 @@ class PipelineWindow(QMainWindow):
         assert self.douyin_title_input is not None
         assert self.douyin_topics_input is not None
         assert self.douyin_collection_input is not None
-        assert self.douyin_description_input is not None
         self.scan_publish_assets(preserve_manual=True)
         topic = self.inputs["topic"].text().strip()
         title = self.douyin_title_input.text().strip()
@@ -2327,7 +2318,7 @@ class PipelineWindow(QMainWindow):
             video_path=Path(self.douyin_video_input.text().strip()),
             cover_path=Path(self.douyin_cover_input.text().strip()) if self.douyin_cover_input.text().strip() else None,
             title=self.douyin_title_input.text(),
-            description=self.douyin_description_input.toPlainText(),
+            description="",
             topics=self.douyin_topics_input.text(),
             collection=self.douyin_collection_input.text(),
         )
@@ -2418,6 +2409,7 @@ class PipelineWindow(QMainWindow):
             app_values["VISUAL_THEME"],
             settings_path=APP_SETTINGS_PATH,
         ).key
+        app_values["INDUSTRY"] = resolve_industry(app_values.get("INDUSTRY", DEFAULT_INDUSTRY)).key
         app_values["DRAFT_FOLDER"] = str(resolve_draft_folder(app_values["DRAFT_FOLDER"]))
         try:
             save_app_settings(app_values, APP_SETTINGS_PATH)
@@ -2440,6 +2432,7 @@ class PipelineWindow(QMainWindow):
             topic=self.inputs["topic"].text().strip(),
             story_world="",
             target_chars=self.inputs["target_chars"].text().strip(),
+            industry=resolve_industry(self.setting_combos["INDUSTRY"].currentText()).key,
             context=self.context_input.toPlainText().strip() if self.context_input is not None else "",
             image_model=self.image_model_setting.currentText().strip(),
             visual_theme=self.setting_combos["VISUAL_THEME"].currentText().strip(),
@@ -2453,44 +2446,7 @@ class PipelineWindow(QMainWindow):
             include_background=not (self.background_black_checkbox is not None and self.background_black_checkbox.isChecked()),
             include_title=self._workflow_orientation() != "\u6a2a\u5c4f",
             include_subtitles=not clean_landscape_master,
-            render_mode=(
-                self.render_mode_combo.currentData()
-                if self.render_mode_combo is not None
-                else "jianying"
-            ),
         )
-
-    def _on_render_mode_changed(self, _index: int = 0) -> None:
-        mode = self.render_mode_combo.currentData() if self.render_mode_combo is not None else "jianying"
-        landscape = self._workflow_orientation() == "横屏"
-        if self.render_mode_combo is not None and mode == "infinite_canvas" and not landscape:
-            self.render_mode_combo.setCurrentIndex(0)
-            QMessageBox.information(self, "无限画布仅支持横版", "这套实验效果目前输出 16:9 横版成片，已切回剪映流程。")
-            return
-        if mode == "infinite_canvas":
-            self._auto_run_step09 = False
-            self._chain_portrait_after_export = False
-        self._update_render_mode_steps()
-        self._update_primary_action()
-        self.refresh_status()
-
-    def _update_render_mode_steps(self) -> None:
-        """Show shared production steps plus the selected renderer's own stages."""
-        infinite = self.render_mode_combo is not None and self.render_mode_combo.currentData() == "infinite_canvas"
-        shared_keys = {"copy", "voice", "shots", "storyboard_prompts", "prompts", "images"}
-        for key, row in self.step_rows.items():
-            visible = key.startswith("infinite_") if infinite else not key.startswith("infinite_")
-            if infinite and key in shared_keys:
-                visible = True
-            if infinite and key in {"layout", "draft", "automation"}:
-                visible = False
-            row.setVisible(visible)
-        if self.steps_note is not None:
-            self.steps_note.setText(
-                "两种成片方式共用文案、配音、分镜和图片；选择 Remotion 后，依次准备素材、规划无限画布镜头、渲染画面并合成横版 MP4。"
-                if infinite
-                else "图片素材会直接用于布局编译和剪映草稿生成。"
-            )
 
     def _change_workflow_mode(self, index: int) -> None:
         del index
@@ -2509,16 +2465,6 @@ class PipelineWindow(QMainWindow):
         orientation_combo = self.setting_combos.get("VIDEO_ORIENTATION")
         if orientation_combo is not None:
             orientation_combo.setCurrentText(self._workflow_orientation())
-        if self.render_mode_combo is not None:
-            self.render_mode_combo.setEnabled(
-                not cover
-                and not publish
-                and mode != WORKFLOW_PORTRAIT_PACKAGE
-                and self._workflow_orientation() == "横屏"
-            )
-            if self._workflow_orientation() != "横屏" and self.render_mode_combo.currentData() == "infinite_canvas":
-                self.render_mode_combo.setCurrentIndex(0)
-        self._update_render_mode_steps()
         self._update_primary_action()
         if publish:
             self.scan_publish_assets(preserve_manual=True)
@@ -2531,7 +2477,7 @@ class PipelineWindow(QMainWindow):
         self.batch_topics.setVisible(True)
         self.batch_status_label.setVisible(True)
         self._update_project_fields_for_stage()
-        self._update_cover_prompt_preview()
+        self._update_cover_panel()
         if not packaging:
             self._update_package_project_label()
 
@@ -2611,7 +2557,7 @@ class PipelineWindow(QMainWindow):
         if self.workflow_actions is not None:
             self.workflow_actions.setVisible(not publish and (not cover or running))
         if self.video_mode_combo is not None:
-            self.video_mode_combo.setEnabled(not running)
+            self._lock_mode_control(self.video_mode_combo, WORKFLOW_LANDSCAPE)
         self.stop_button.setVisible(running and not publish)
         self.start_button.setVisible(not running and not cover and not publish)
         self.batch_button.setVisible(not running and not cover and not publish)
@@ -2735,7 +2681,7 @@ class PipelineWindow(QMainWindow):
         self._remember_draft_target_for_options(options)
         self.log.clear()
         self._automation_last_status = "未执行"
-        self._chain_portrait_after_export = options.render_mode == "jianying"
+        self._chain_portrait_after_export = True
         self._portrait_chain_attempts = 0
         self._auto_run_step09 = False
         self._focus_workflow_view()
@@ -2828,7 +2774,7 @@ class PipelineWindow(QMainWindow):
             self._remember_draft_target_for_options(options)
         self._automation_last_status = "未执行" if options.run_draft else self._automation_last_status
         self._chain_portrait_after_export = False
-        self._auto_run_step09 = options.run_draft and options.render_mode == "jianying"
+        self._auto_run_step09 = options.run_draft
         self._focus_workflow_view()
         self.runner.start(options)
         self.refresh_status()
@@ -2846,6 +2792,7 @@ class PipelineWindow(QMainWindow):
         try:
             command, output = build_cover_command(
                 topic,
+                industry=resolve_industry(self.setting_combos["INDUSTRY"].currentText()).key,
                 context=self.context_input.toPlainText().strip() if self.context_input is not None else "",
                 image_model=self.image_model_setting.currentText(),
                 image_quality=self.api_combos.get("IMAGE_QUALITY").currentText()
@@ -2904,7 +2851,7 @@ class PipelineWindow(QMainWindow):
         self._automation_last_status = "未执行"
         self._chain_portrait_after_export = packaging and not package_stage
         self._portrait_chain_attempts = 0
-        self._auto_run_step09 = options.render_mode == "jianying"
+        self._auto_run_step09 = True
         self._focus_workflow_view()
         self.runner.start(options)
         self.refresh_status()
@@ -2968,28 +2915,6 @@ class PipelineWindow(QMainWindow):
         if not self._persist_settings():
             return
         options = self._read_options()
-        infinite_stage_keys = {
-            "infinite_prepare": "prepare",
-            "infinite_plan": "plan",
-            "infinite_frames": "frames",
-            "infinite_encode": "encode",
-        }
-        if key in infinite_stage_keys:
-            if options.render_mode != "infinite_canvas":
-                QMessageBox.information(self, "当前不是 Remotion 模式", "请先在“成片方式”中选择“Remotion 无限画布”。")
-                return
-            options = replace(
-                options,
-                run_copy=False,
-                run_voice=False,
-                run_shots=False,
-                run_storyboard_prompts=False,
-                run_prompts=False,
-                run_images=False,
-                run_layout=False,
-                run_draft=True,
-                render_stage=infinite_stage_keys[key],
-            )
         options = replace(
             options,
             run_copy=key == "copy", run_voice=key == "voice", run_shots=key == "shots",
@@ -2997,19 +2922,6 @@ class PipelineWindow(QMainWindow):
             run_prompts=key == "prompts", run_images=key == "images", run_layout=key == "layout",
             run_draft=key == "draft", overwrite_images=key == "images" and overwrite_images,
         )
-        if key in infinite_stage_keys:
-            options = replace(
-                options,
-                run_copy=False,
-                run_voice=False,
-                run_shots=False,
-                run_storyboard_prompts=False,
-                run_prompts=False,
-                run_images=False,
-                run_layout=False,
-                run_draft=True,
-                render_stage=infinite_stage_keys[key],
-            )
         if key == "draft":
             package_mode = (
                 self.workflow_mode is not None
@@ -3091,11 +3003,8 @@ class PipelineWindow(QMainWindow):
         except ValueError:
             return resolve_cover_size(DEFAULT_COVER_SIZE_KEY)
 
-    def _update_cover_prompt_preview(self, _value: str = "") -> None:
-        if self.cover_prompt_preview is None:
-            return
+    def _update_cover_panel(self, _value: str = "") -> None:
         topic = self.inputs["topic"].text().strip() if "topic" in self.inputs else ""
-        context = self.context_input.toPlainText().strip() if self.context_input is not None else ""
         size = self._current_cover_size()
         if self.cover_canvas_label is not None:
             self.cover_canvas_label.setText(f"{size[2]} × {size[3]}（{size[4]} {size[5]}）")
@@ -3105,14 +3014,9 @@ class PipelineWindow(QMainWindow):
                 "只生成 PNG，不执行视频制作流程"
             )
         if not topic:
-            self.cover_prompt_preview.clear()
             if self.cover_output_label is not None:
                 self.cover_output_label.clear()
             return
-        try:
-            self.cover_prompt_preview.setPlainText(build_cover_prompt(topic, context, size[0]))
-        except ValueError:
-            self.cover_prompt_preview.clear()
         if self.cover_output_label is not None:
             self.cover_output_label.setText(str(self.cover_artifact_path()))
 
@@ -3135,10 +3039,6 @@ class PipelineWindow(QMainWindow):
     def artifact_path(self, key: str) -> Path:
         output = self.output_dir()
         draft_folder, draft_name = self._current_jianying_draft()
-        render_mode = self.render_mode_combo.currentData() if self.render_mode_combo is not None else "jianying"
-        # The existing UI mode remains “Remotion 无限画布”; its renderer now
-        # lives in the isolated scripted implementation.
-        experiment = PROJECT_ROOT / "experiments" / "remotion_scripted"
         return {
             "copy": output / "wenan.txt",
             "voice": output / "narration.wav",
@@ -3147,15 +3047,7 @@ class PipelineWindow(QMainWindow):
             "prompts": output / "image_prompts_plus.csv",
             "images": output / "generated_assets_plus",
             "layout": output / "layout_result.json",
-            "draft": (
-                video_export_path(OUTPUT_ROOT, self.inputs["topic"].text(), "landscape")
-                if key == "draft" and render_mode == "infinite_canvas"
-                else draft_folder / draft_name
-            ),
-            "infinite_prepare": experiment / "out" / "source.json",
-            "infinite_plan": experiment / "public" / "manifest.json",
-            "infinite_frames": experiment / "out" / "frames",
-            "infinite_encode": video_export_path(OUTPUT_ROOT, self.inputs["topic"].text(), "landscape"),
+            "draft": draft_folder / draft_name,
         }[key]
 
     def artifact_exists(self, key: str) -> bool:
@@ -3265,32 +3157,15 @@ class PipelineWindow(QMainWindow):
             self.stop_button.setEnabled(False)
             self._set_douyin_publish_enabled(not douyin_running)
             return
-        infinite_mode = self.render_mode_combo is not None and self.render_mode_combo.currentData() == "infinite_canvas"
-        if infinite_mode:
-            for key, _, _, action, _ in INFINITE_STAGE_DEFS:
-                exists = self.artifact_exists(key)
-                artifact = self.artifact_path(key)
-                if artifact.is_dir():
-                    try:
-                        exists = exists and any(artifact.iterdir())
-                    except OSError:
-                        exists = False
-                self.status_labels[key].setText("运行中" if running else ("完成" if exists else "未运行"))
-                self.artifact_labels[key].setText("已生成" if exists else "未生成")
-                self.run_button_labels[key].setText(RERUN_ACTIONS[key] if exists else action)
-                self.run_buttons[key].setEnabled(not running)
         draft_ready = self.artifact_exists("draft")
         self._set_jianying_automation_enabled(
-            jianying_supported and not infinite_mode and draft_ready and not running and not jianying_running
+            jianying_supported and draft_ready and not running and not jianying_running
         )
         if self.douyin_open_button is not None or self.douyin_publish_button is not None:
             self._set_douyin_publish_enabled(not douyin_running)
         for key, _, _, action, _ in UI_STEP_DEFS:
             if key == "automation":
-                if infinite_mode:
-                    status_text = "跳过"
-                    artifact_text = "无限画布已直接生成 MP4"
-                elif not jianying_supported:
+                if not jianying_supported:
                     status_text = "不可用"
                     artifact_text = "仅支持 Windows/macOS"
                 elif not draft_ready:
@@ -3309,7 +3184,7 @@ class PipelineWindow(QMainWindow):
                 self.artifact_labels[key].setText(artifact_text)
                 self.run_buttons[key].setText(action)
                 self.run_buttons[key].setEnabled(
-                    jianying_supported and not infinite_mode and draft_ready and not running and not jianying_running
+                    jianying_supported and draft_ready and not running and not jianying_running
                 )
                 continue
             if key == "images":

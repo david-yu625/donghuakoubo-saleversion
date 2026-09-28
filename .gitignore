@@ -19,6 +19,9 @@ dist/
 output/
 generated_images/
 release/
+!tools/release/
+!tools/release/**
+tools/**/__pycache__/
 *.zip
 src/security_guard/release_keys/
 *.license.json

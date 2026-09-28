@@ -10,6 +10,7 @@ from ..application import build_project_draft
 from ..core.models import LayoutResult
 from ..env import load_env_file
 from ..paths import default_draft_folder
+from ..security_guard.secure_files import read_text as secure_read_text
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -43,7 +44,13 @@ def main() -> int:
     )
     if not layout_path.is_file():
         raise FileNotFoundError(f"第07步布局文件不存在：{layout_path}")
-    layout = LayoutResult.from_dict(json.loads(layout_path.read_text(encoding="utf-8-sig")))
+    layout_text = secure_read_text(layout_path).strip()
+    if not layout_text:
+        raise ValueError(f"第07步布局文件为空，请先重新运行第07步：{layout_path}")
+    try:
+        layout = LayoutResult.from_dict(json.loads(layout_text))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"第07步布局文件格式无效，请重新运行第07步：{layout_path}") from exc
 
     build = build_project_draft(
         project_dir,

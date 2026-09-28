@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .core.models import orientation_key
+from .industry_profiles import DEFAULT_INDUSTRY, resolve_industry
 from .paths import default_draft_folder, resolve_draft_folder, safe_topic, video_export_path
 from .prepare.image_generation import (
     DEFAULT_IMAGE_BASE_URL,
@@ -39,10 +40,26 @@ from .settings import (
 )
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+def runtime_project_root() -> Path:
+    configured = os.environ.get("DONGHUA_PROJECT_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[1]
+
+
+PROJECT_ROOT = runtime_project_root()
 OUTPUT_ROOT = PROJECT_ROOT / "output"
 ENV_PATH = PROJECT_ROOT / ".env"
 DEFAULT_DRAFT_FOLDER = default_draft_folder()
+
+
+def module_command(module: str, *args: object) -> list[str]:
+    """Build a child command for source and PyInstaller runtimes."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--internal-run", module, *(str(arg) for arg in args)]
+    return [sys.executable, "-m", module, *(str(arg) for arg in args)]
 
 
 def find_default_bgm_path() -> Path:
@@ -161,6 +178,7 @@ class Options:
     topic: str
     story_world: str
     target_chars: str
+    industry: str = DEFAULT_INDUSTRY
     context: str = ""
     image_model: str = DEFAULT_IMAGE_MODEL
     visual_theme: str = resolve_visual_theme(DEFAULT_VISUAL_THEME).label
@@ -182,8 +200,6 @@ class Options:
     include_background: bool = True
     include_title: bool = True
     include_subtitles: bool = True
-    render_mode: str = "jianying"
-    render_stage: str = "all"
 
 
 class Runner:
@@ -481,9 +497,6 @@ def secure_roots_for_command(command: list[str], output_dir: Path) -> tuple[Path
         module_index = command.index("src.commands.build_portrait_package")
         if module_index + 1 < len(command):
             roots.append(Path(command[module_index + 1]).expanduser().resolve())
-    if "src.commands.render_infinite_canvas" in command:
-        experiment = PROJECT_ROOT / "experiments" / "remotion_scripted"
-        roots.extend((experiment / "runs", experiment / "public", experiment / "out"))
     unique: list[Path] = []
     seen: set[Path] = set()
     for root in roots:
@@ -555,6 +568,7 @@ def cover_output_path(
 def build_cover_command(
     topic: str,
     *,
+    industry: str = DEFAULT_INDUSTRY,
     context: str = "",
     image_model: str = "",
     image_quality: str = "",
@@ -568,11 +582,14 @@ def build_cover_command(
         raise ValueError("主题不能为空")
     size_key, _label, _width, _height, _ratio, _orientation = resolve_cover_size(cover_size)
     output = (output_path or cover_output_path(topic, cover_size=size_key)).expanduser().resolve()
+    module_flag = "--internal-run" if getattr(sys, "frozen", False) else "-m"
     command = [
         sys.executable,
-        "-m",
+        module_flag,
         "src.generate_cover",
         topic,
+        "--industry",
+        resolve_industry(industry).key,
         "--output",
         str(output),
         "--model",
@@ -599,9 +616,8 @@ def reuse_completed_materials(options: Options, *, output_root: Path = OUTPUT_RO
     narration = topic_dir / "narration.wav"
     shot_csv = topic_dir / "shot_timeline_source_time.csv"
     storyboard_csv = topic_dir / "storyboard_prompts.csv"
-    remotion = options.render_mode == "infinite_canvas"
-    prompt_csv = topic_dir / ("image_prompts_remotion.csv" if remotion else "image_prompts_plus.csv")
-    element_csv = topic_dir / ("element_timeline_remotion.csv" if remotion else "element_timeline_with_assets.csv")
+    prompt_csv = topic_dir / "image_prompts_plus.csv"
+    element_csv = topic_dir / "element_timeline_with_assets.csv"
 
     with unlocked_files(topic_dir):
         complete = (
@@ -666,6 +682,7 @@ def update_env_file(path: Path, values: dict[str, str]) -> None:
 
 def build_commands(options: Options) -> tuple[list[tuple[str, list[str]]], Path]:
     py = sys.executable
+    module_flag = "--internal-run" if getattr(sys, "frozen", False) else "-m"
     topic = options.topic.strip()
     if not topic:
         raise ValueError("主题不能为空")
@@ -679,23 +696,23 @@ def build_commands(options: Options) -> tuple[list[tuple[str, list[str]]], Path]
     storyboard_prompt_csv = topic_dir / "storyboard_prompts.csv"
     prompt_csv = topic_dir / "image_prompts_plus.csv"
     element_assets = topic_dir / "element_timeline_with_assets.csv"
-    remotion_prompt_csv = topic_dir / "image_prompts_remotion.csv"
-    remotion_element_assets = topic_dir / "element_timeline_remotion.csv"
-    remotion_asset_dir = topic_dir / "generated_assets_remotion"
     layout_json = topic_dir / "layout_result.json"
     draft_name = draft_name_for_orientation(
         options.draft_name or f"{safe_topic(topic)}_src",
         options.orientation,
     )
     visual_theme = resolve_visual_theme(options.visual_theme)
+    industry = resolve_industry(options.industry)
 
     commands: list[tuple[str, list[str]]] = []
     if options.run_copy:
         command = [
             py,
-            "-m",
+            module_flag,
             "src.01_generate_copywriting",
             topic,
+            "--industry",
+            industry.key,
             "--output",
             str(wenan),
             "--target-chars",
@@ -707,11 +724,11 @@ def build_commands(options: Options) -> tuple[list[tuple[str, list[str]]], Path]
             command.extend(["--context", options.context.strip()])
         commands.append(("01 文案", command))
     if options.run_voice:
-        commands.append(("02 配音", [py, "-m", "src.02_generate_voice_timeline", str(wenan)]))
+        commands.append(("02 配音", [py, module_flag, "src.02_generate_voice_timeline", str(wenan)]))
     if options.run_shots:
         commands.append(("03 分镜", [
             py,
-            "-m",
+            module_flag,
             "src.03_generate_shot_timeline",
             str(wenan),
             str(topic_dir / "timeline.csv"),
@@ -721,9 +738,11 @@ def build_commands(options: Options) -> tuple[list[tuple[str, list[str]]], Path]
     if options.run_storyboard_prompts:
         commands.append(("04 图片内容", [
             py,
-            "-m",
+            module_flag,
             "src.04_generate_storyboard_prompts",
             str(shot_csv),
+            "--industry",
+            industry.key,
             "--prompt-output",
             str(storyboard_prompt_csv),
             "--orientation",
@@ -731,34 +750,33 @@ def build_commands(options: Options) -> tuple[list[tuple[str, list[str]]], Path]
         ]))
     if options.run_prompts:
         image_model = options.image_model.strip() or DEFAULT_IMAGE_MODEL
-        remotion = options.render_mode == "infinite_canvas"
         commands.append(("05 生图提示词", [
             py,
-            "-m",
+            module_flag,
             "src.05_generate_image_prompts",
             str(storyboard_prompt_csv),
+            "--industry",
+            industry.key,
             "--prompt-output",
-            str(remotion_prompt_csv if remotion else prompt_csv),
+            str(prompt_csv),
             "--element-output",
-            str(remotion_element_assets if remotion else element_assets),
+            str(element_assets),
             "--asset-dir",
-            str(remotion_asset_dir if remotion else topic_dir / "generated_assets_plus"),
+            str(topic_dir / "generated_assets_plus"),
             "--model",
             image_model,
             "--theme",
             visual_theme.key,
             "--orientation",
             options.orientation,
-            *( ["--mode", "remotion"] if remotion else [] ),
         ]))
     if options.run_images:
         image_model = options.image_model.strip() or DEFAULT_IMAGE_MODEL
-        remotion = options.render_mode == "infinite_canvas"
         image_command = [
             py,
-            "-m",
+            module_flag,
             "src.06_generate_images",
-            str(remotion_prompt_csv if remotion else prompt_csv),
+            str(prompt_csv),
             "--model",
             image_model,
             "--theme",
@@ -768,48 +786,23 @@ def build_commands(options: Options) -> tuple[list[tuple[str, list[str]]], Path]
             image_command.append("--overwrite")
         commands.append(("06 图片", image_command))
     if options.run_layout:
-        if options.render_mode != "infinite_canvas":
-            layout_command = [
-                py,
-                "-m",
-                "src.07_compile_layout",
-                str(topic_dir),
-                "--title",
-                topic,
-                "--theme",
-                visual_theme.key,
-                "--orientation",
-                options.orientation,
-                "--output",
-                str(layout_json),
-            ]
-            layout_command.append("--subtitles" if options.include_subtitles else "--no-subtitles")
-            commands.append(("07 布局", layout_command))
+        layout_command = [
+            py,
+            module_flag,
+            "src.07_compile_layout",
+            str(topic_dir),
+            "--title",
+            topic,
+            "--theme",
+            visual_theme.key,
+            "--orientation",
+            options.orientation,
+            "--output",
+            str(layout_json),
+        ]
+        layout_command.append("--subtitles" if options.include_subtitles else "--no-subtitles")
+        commands.append(("07 布局", layout_command))
     if options.run_draft:
-        if options.render_mode == "infinite_canvas":
-            if orientation_key(options.orientation) != "landscape":
-                raise ValueError("无限画布效果目前只支持横版成片")
-            stage_commands = {
-                "prepare": "07 无限画布素材",
-                "plan": "08 无限画布规划",
-                "frames": "09 无限画布渲染",
-                "encode": "10 无限画布编码",
-            }
-            stages = tuple(stage_commands) if options.render_stage == "all" else (options.render_stage,)
-            for stage in stages:
-                commands.append((stage_commands[stage], [
-                    py,
-                    "-m",
-                    "src.commands.render_infinite_canvas",
-                    str(topic_dir),
-                    "--title",
-                    topic,
-                    "--output",
-                    str(video_export_path(OUTPUT_ROOT, topic, "landscape")),
-                    "--stage",
-                    stage,
-                ]))
-            return commands, topic_dir
         background_image = None
         if options.include_background:
             background_image = resolve_project_file_path(
@@ -820,7 +813,7 @@ def build_commands(options: Options) -> tuple[list[tuple[str, list[str]]], Path]
                 raise FileNotFoundError(f"背景图片不存在：{background_image}")
         draft_command = [
             py,
-            "-m",
+            module_flag,
             "src.08_generate_jianying_draft",
             str(topic_dir),
             "--layout",
@@ -871,7 +864,7 @@ def build_image_regeneration_command(
         raise ValueError("至少选择一张图片")
     command = [
         sys.executable,
-        "-m",
+        "--internal-run" if getattr(sys, "frozen", False) else "-m",
         "src.06_generate_images",
         str(prompt_csv.expanduser().resolve()),
         "--model",
@@ -904,7 +897,7 @@ def build_portrait_package_command(
     source_video = source_video.expanduser().resolve()
     command = [
         sys.executable,
-        "-m",
+        "--internal-run" if getattr(sys, "frozen", False) else "-m",
         "src.commands.build_portrait_package",
         str(project_dir),
         str(source_video),

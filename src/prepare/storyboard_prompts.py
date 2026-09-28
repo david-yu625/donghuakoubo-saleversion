@@ -20,6 +20,7 @@ from openai import OpenAI
 
 from ..core.models import normalize_orientation
 from ..env import load_env_file
+from ..industry_profiles import DEFAULT_INDUSTRY, industry_prompt
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MODEL = "deepseek-chat"
@@ -35,8 +36,8 @@ SYSTEM_PROMPT = """#目标
 1. 按照我给你的每个分镜文案内容，生成后续工作流的文生图提示词。
 
 #背景
-1. 我是一名计算机资深从业者，硕士毕业，从事多年软件技术研发。
-2. 现在想做抖音自媒体短视频。通过将科普知识以专业白板形式讲出来。
+1. 我是一名行业知识科普作者，负责把专业知识用准确、易懂的方式讲出来。
+2. 现在想做抖音自媒体短视频。通过将行业知识以专业白板形式讲出来。
 3. 每个分镜共有两部分元素组成，一部分元素以背景图的形式展示，另一部分以图片元素的形式插入。
 4. 背景图的设计是以 Excalidraw 风格画面的形式展现，里面包含一些文字。
 5. 背景图的最上面中间位置添加这个分镜的标题。
@@ -83,6 +84,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-tokens", type=int, default=10000)
     parser.add_argument("--max-attempts", type=int, default=3)
     parser.add_argument("--orientation", default="")
+    parser.add_argument("--industry", default=DEFAULT_INDUSTRY)
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -94,8 +96,8 @@ def main() -> int:
         shot_csv = args.shot_csv.expanduser().resolve()
         output = args.prompt_output.expanduser().resolve() if args.prompt_output else shot_csv.with_name("storyboard_prompts.csv")
         shots = read_shots(shot_csv)
-        system_prompt = system_prompt_for_orientation(args.orientation)
-        user_prompt = build_user_prompt(shots, args.orientation)
+        system_prompt = system_prompt_for_orientation(args.orientation, args.industry)
+        user_prompt = build_user_prompt(shots, args.orientation, args.industry)
         if args.request_output:
             request_path = args.request_output.expanduser().resolve()
             request_path.parent.mkdir(parents=True, exist_ok=True)
@@ -141,7 +143,11 @@ def split_title_content(shot: dict[str, str]) -> tuple[str, str]:
     return title, narration
 
 
-def build_user_prompt(shots: list[dict[str, str]], orientation: str = "") -> str:
+def build_user_prompt(
+    shots: list[dict[str, str]],
+    orientation: str = "",
+    industry: str = DEFAULT_INDUSTRY,
+) -> str:
     direction = "横屏" if normalize_orientation(orientation) == "landscape" else "竖屏"
     lines = [
         "#输入",
@@ -155,15 +161,18 @@ def build_user_prompt(shots: list[dict[str, str]], orientation: str = "") -> str
         "#画布方向",
         direction,
         "",
+        "#行业设定",
+        industry_prompt(industry),
+        "",
         "#说明",
         "只生成图片内容。CSV 字段、元素编号和时间由程序读取第03步数据后自动填写。",
     ])
     return "\n".join(lines)
 
 
-def system_prompt_for_orientation(orientation: str = "") -> str:
+def system_prompt_for_orientation(orientation: str = "", industry: str = DEFAULT_INDUSTRY) -> str:
     del orientation
-    return SYSTEM_PROMPT
+    return SYSTEM_PROMPT + "\n\n#行业设定\n" + industry_prompt(industry)
 
 
 def generate_with_model(*, system_prompt: str, user_prompt: str, api_key: str, model: str,

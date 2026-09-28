@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import csv
+import io
 import re
 from dataclasses import dataclass
 from pathlib import Path
+
+from ..security_guard.secure_files import read_text as secure_read_text
 
 
 TIME_RE = re.compile(r"\[\s*([0-9.]+)\s*,\s*([0-9.]+)")
@@ -96,29 +99,26 @@ def validate_element_timing(
 def read_copy_lines(path: Path) -> list[str]:
     if not path.exists():
         return []
-    return [line.strip() for line in path.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
+    return [line.strip() for line in secure_read_text(path).splitlines() if line.strip()]
 
 
 def read_rows(path: Path) -> list[dict[str, str]]:
-    with path.open("r", encoding="utf-8-sig", newline="") as file:
-        return list(csv.DictReader(file))
+    return list(csv.DictReader(io.StringIO(secure_read_text(path))))
 
 
 def read_shots(path: Path) -> list[dict[str, str]]:
-    with path.open("r", encoding="utf-8-sig", newline="") as file:
-        reader = csv.DictReader(file)
-        if reader.fieldnames != SHOT_FIELDS:
-            raise ValueError(f"Shot CSV 列名不匹配：{reader.fieldnames}")
-        rows = list(reader)
+    reader = csv.DictReader(io.StringIO(secure_read_text(path)))
+    if reader.fieldnames != SHOT_FIELDS:
+        raise ValueError(f"Shot CSV 列名不匹配：{reader.fieldnames}")
+    rows = list(reader)
     return sorted(rows, key=lambda row: int(row["开始时间ms"]))
 
 
 def read_elements(path: Path) -> list[dict[str, str]]:
-    with path.open("r", encoding="utf-8-sig", newline="") as file:
-        reader = csv.DictReader(file)
-        if reader.fieldnames not in (ELEMENT_FIELDS, LEGACY_ELEMENT_FIELDS):
-            raise ValueError(f"元素素材 CSV 列名不匹配：{reader.fieldnames}")
-        rows = list(reader)
+    reader = csv.DictReader(io.StringIO(secure_read_text(path)))
+    if reader.fieldnames not in (ELEMENT_FIELDS, LEGACY_ELEMENT_FIELDS):
+        raise ValueError(f"元素素材 CSV 列名不匹配：{reader.fieldnames}")
+    rows = list(reader)
     for row in rows:
         row["role"] = (row.get("role") or "").strip()
     return sorted(
@@ -134,29 +134,27 @@ def read_subtitles(path: Path, copy_lines: list[str] | None = None) -> list[tupl
         for line in (copy_lines or [])
         if normalize_sentence(line)
     }
-    with path.open("r", encoding="utf-8-sig", newline="") as file:
-        reader = csv.reader(file)
-        next(reader, None)
-        rows = reader
-        for parts in rows:
-            if len(parts) < 3:
-                continue
-            time_index = next(
-                (index for index, value in enumerate(parts[1:], start=1) if value.lstrip().startswith("[")),
-                2,
-            )
-            if time_index >= len(parts):
-                continue
-            text = ",".join(parts[1:time_index]).strip().strip("{}")
-            time_value = ",".join(parts[time_index:])
-            match = TIME_RE.search(time_value)
-            if not match:
-                continue
-            text = punctuation_map.get(normalize_sentence(text), text)
-            start_ms = round(float(match.group(1)) * 1000)
-            end_ms = round(float(match.group(2)) * 1000)
-            if text and end_ms > start_ms:
-                subtitles.append((text, start_ms, end_ms))
+    reader = csv.reader(io.StringIO(secure_read_text(path)))
+    next(reader, None)
+    for parts in reader:
+        if len(parts) < 3:
+            continue
+        time_index = next(
+            (index for index, value in enumerate(parts[1:], start=1) if value.lstrip().startswith("[")),
+            2,
+        )
+        if time_index >= len(parts):
+            continue
+        text = ",".join(parts[1:time_index]).strip().strip("{}")
+        time_value = ",".join(parts[time_index:])
+        match = TIME_RE.search(time_value)
+        if not match:
+            continue
+        text = punctuation_map.get(normalize_sentence(text), text)
+        start_ms = round(float(match.group(1)) * 1000)
+        end_ms = round(float(match.group(2)) * 1000)
+        if text and end_ms > start_ms:
+            subtitles.append((text, start_ms, end_ms))
     return subtitles
 
 

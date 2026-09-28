@@ -5,7 +5,6 @@ import unittest
 from ..prepare.image_prompts import (
     MAX_PROMPT_CHARS,
     build_prompt,
-    collapse_remotion_rows,
     default_image_size,
     is_background_element,
     is_background_prompt,
@@ -15,23 +14,6 @@ from ..prepare.image_prompts import (
 
 
 class ImagePromptStyleTest(unittest.TestCase):
-    def test_remotion_collapses_each_shot_to_one_composite_row(self):
-        rows = [
-            {"element_id": "s1_bg01", "shot_id": "1", "type": "image", "role": "background", "content": "标题和背景", "start_ms": "0", "end_ms": "5000"},
-            {"element_id": "s1_img01", "shot_id": "1", "type": "image", "role": "element", "content": "输入对象", "start_ms": "0", "end_ms": "5000"},
-            {"element_id": "s1_img02", "shot_id": "1", "type": "image", "role": "element", "content": "处理结果", "start_ms": "0", "end_ms": "5000"},
-            {"element_id": "s2_bg01", "shot_id": "2", "type": "image", "role": "background", "content": "第二场景", "start_ms": "5000", "end_ms": "9000"},
-            {"element_id": "s2_img01", "shot_id": "2", "type": "image", "role": "element", "content": "第二主体", "start_ms": "5000", "end_ms": "9000"},
-        ]
-
-        collapsed = collapse_remotion_rows(rows)
-
-        self.assertEqual([row["element_id"] for row in collapsed], ["s1_img01", "s2_img01"])
-        self.assertEqual([row["shot_id"] for row in collapsed], ["1", "2"])
-        self.assertTrue(all(row["role"] == "element" for row in collapsed))
-        self.assertIn("输入对象", collapsed[0]["content"])
-        self.assertIn("处理结果", collapsed[0]["content"])
-
     def test_background_prompt_keeps_hash_sections_and_title_rules(self):
         design = "1920*1080白板背景，顶部中间显示标题“总结丢了什么”，禁止具体插图/对象，下方和右侧保留纯白空白区域。"
         prompt = build_prompt(

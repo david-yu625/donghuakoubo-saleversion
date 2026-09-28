@@ -10,6 +10,7 @@ from pathlib import Path
 from PIL import Image
 
 from ..env import load_env_file
+from ..industry_profiles import DEFAULT_INDUSTRY, resolve_industry
 from .image_generation import DEFAULT_IMAGE_MODEL, generate_image, resolve_image_model
 
 
@@ -33,7 +34,11 @@ COVER_PROMPT_TEMPLATE = """#封面图生成
 主题文字：{topic}
 
 #图片内容
-围绕“{topic}”设计一幅具有明确主题含义的科普视觉画面。使用与主题直接相关的多个具体对象、结构或关系，形成一幅完整、易懂、有视觉冲击力的白板科普插画。突出主题核心，不加入无关装饰。
+围绕“{topic}”设计一幅具有明确主题含义的{industry_label}科普视觉画面。使用与主题直接相关的多个具体对象、结构或关系，形成一幅完整、易懂、有视觉冲击力的白板科普插画。突出主题核心，不加入无关装饰。
+
+#行业视觉定位
+优先使用以下行业中常见、容易理解的视觉对象或关系：{visual_examples}。不要把行业名称、这段说明或无关的行业装饰直接写到图片上。
+画面应服务于该行业的内容重点：{industry_focus}。
 
 #视觉风格
 MG 动画风格，手绘白板元素感，整体风格类似 Excalidraw 生成的手绘信息图。纯白色背景，黑色手绘线条，线条稍微粗一些，可以少量使用蓝色、黄色作为重点强调色。画面简洁、清晰，适合作品封面。
@@ -71,11 +76,17 @@ def resolve_cover_size(value: str = "") -> tuple[str, str, int, int, str, str]:
     raise ValueError(f"不支持的封面尺寸：{value}")
 
 
-def build_cover_prompt(topic: str, context: str = "", cover_size: str = "") -> str:
+def build_cover_prompt(
+    topic: str,
+    context: str = "",
+    cover_size: str = "",
+    industry: str = DEFAULT_INDUSTRY,
+) -> str:
     topic = topic.strip()
     if not topic:
         raise ValueError("主题不能为空")
     _key, _label, width, height, ratio, orientation = resolve_cover_size(cover_size)
+    profile = resolve_industry(industry)
     context_text = (
         f"\n#补充要求\n结合以下上下文理解主题，但不要把上下文原文直接写到图片上：{context.strip()}"
         if context.strip()
@@ -88,6 +99,9 @@ def build_cover_prompt(topic: str, context: str = "", cover_size: str = "") -> s
         height=height,
         ratio=ratio,
         orientation=orientation,
+        industry_label=profile.label,
+        visual_examples=profile.visual_examples,
+        industry_focus=profile.focus,
     ).strip()
 
 
@@ -127,10 +141,11 @@ def generate_cover(
     quality: str = "",
     visual_theme: str = "white",
     cover_size: str = "",
+    industry: str = DEFAULT_INDUSTRY,
     overwrite: bool = False,
 ) -> Path:
     _key, _label, width, height, _ratio, _orientation = resolve_cover_size(cover_size)
-    prompt = build_cover_prompt(topic, context, cover_size)
+    prompt = build_cover_prompt(topic, context, cover_size, industry)
     output_path = output_path.expanduser().resolve()
     if output_path.is_file() and not overwrite:
         print(f"封面已存在，跳过：{output_path}")
@@ -158,6 +173,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("topic", help="封面主题")
     parser.add_argument("--output", type=Path, help="封面 PNG 输出路径")
     parser.add_argument("--context", default="", help="可选的主题上下文")
+    parser.add_argument("--industry", default=DEFAULT_INDUSTRY, help="内容行业")
     parser.add_argument("--model", default="", help=f"图片模型，默认读取 IMAGE_MODEL 或 {DEFAULT_IMAGE_MODEL}")
     parser.add_argument("--base-url", default="")
     parser.add_argument("--api-key", default="")
@@ -187,6 +203,7 @@ def main() -> int:
             quality=args.quality,
             visual_theme=args.theme,
             cover_size=args.size,
+            industry=args.industry,
             overwrite=args.overwrite,
         )
     except Exception as exc:

@@ -4,8 +4,8 @@ The publisher deliberately lives outside the production pipeline.  It uses a
 dedicated persistent browser profile so the user can log in once without the
 pipeline reading or managing browser credentials.
 
-Some selector fallbacks mirror the MIT-licensed ``vendor/social-auto-upload``
-Douyin uploader, while this module keeps the project's Playwright/profile API.
+Some selector fallbacks cover multiple creator-center page variants, while this
+module keeps the project's Playwright/profile API.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from typing import Iterable
 from openai import OpenAI
 
 from ..env import load_env_file
+from ..industry_profiles import DEFAULT_INDUSTRY, industry_prompt
 from ..paths import VIDEO_EXPORT_VARIANTS, safe_topic, video_export_path
 
 
@@ -96,6 +97,7 @@ def normalize_topics(value: str | Iterable[str]) -> tuple[str, ...]:
 def generate_publish_metadata(
     topic: str,
     *,
+    industry: str = DEFAULT_INDUSTRY,
     context: str = "",
     api_key: str = "",
     model: str = "",
@@ -117,10 +119,12 @@ def generate_publish_metadata(
     context = context.strip()[:6000]
     prompt = (
         "你负责短视频发布信息策划。根据主题和文案，生成一个适合抖音的作品标题和话题标签。\n"
+        "发布内容必须符合所选行业定位，标题和话题不要套用其他行业的固定模板。\n"
         "标题要求：准确、具体、有吸引力，不虚构事实，不超过30个汉字，不带#号。\n"
         "话题要求：生成3到5个标签，必须与作品内容直接相关；优先选择当前平台常见、具有流量潜力的热点方向标签，"
         "但不要编造无法确认的实时热搜事件，不要使用与作品无关的泛流量词。\n"
         "只输出严格JSON：{\"title\":\"...\",\"topics\":[\"标签1\",\"标签2\"]}\n\n"
+        f"#行业设定\n{industry_prompt(industry)}\n\n"
         f"主题：{topic}\n"
         f"文案或补充上下文：{context or '（无）'}"
     )

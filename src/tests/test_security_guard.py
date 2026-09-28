@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from src.security_guard import license as license_module
-from src.security_guard.issue_license import issue_license
+from tools.license.issue_license import issue_license
 
 
 class SecurityGuardTests(unittest.TestCase):

@@ -1,9 +1,0 @@
-{
-  "title": "前后变化，差别一下就看明白了",
-  "labels": ["调整前", "调整后"],
-  "images": [
-    "mg_asset_library/images/characters/char_worker_group.png",
-    "mg_asset_library/images/characters/char_consumer_group.png"
-  ],
-  "duration_ms": 5000
-}

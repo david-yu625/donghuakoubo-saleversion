@@ -16,6 +16,7 @@ from pathlib import Path
 
 from ..core.models import normalize_orientation
 from ..env import load_env_file
+from ..industry_profiles import DEFAULT_INDUSTRY, industry_prompt
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_ASSET_LIBRARY = PROJECT_ROOT / "mg_asset_library" / "images"
 
@@ -67,8 +68,8 @@ ELEMENT_IMAGE_PROMPT = (
     "#元素图生成\n"
     "#图片内容\n{content}\n"
     "#背景\n"
-    "1. 我是一名计算机资深从业者，硕士毕业，从事多年软件技术研发。\n"
-    "2. 现在想做抖音自媒体短视频。通过将科普知识以专业白板形式讲出来。\n"
+    "1. 我是一名行业知识科普作者，负责把专业知识用准确、易懂的方式讲出来。\n"
+    "2. 现在想做抖音自媒体短视频。通过将行业知识以专业白板形式讲出来。\n"
     "#目标\n"
     "1. 请按提示词做 MG 动画风格的图片。\n"
     "2. 图片中的元素风格像 Excalidraw 生成的一样。\n"
@@ -98,12 +99,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", default="", help="兼容参数；所有模型统一使用纯色背景提示词")
     parser.add_argument("--theme", default="white", help="固定为白色板书主题")
     parser.add_argument("--orientation", default="", help="画布方向：portrait/landscape 或 竖屏/横屏")
-    parser.add_argument(
-        "--mode",
-        choices=("jianying", "remotion"),
-        default="jianying",
-        help="素材策略；remotion 为每个场景输出一张合成图，剪映模式保持背景+元素多图",
-    )
+    parser.add_argument("--industry", default=DEFAULT_INDUSTRY, help="内容行业")
     return parser.parse_args()
 
 
@@ -116,8 +112,6 @@ def main() -> int:
         prompt_output = args.prompt_output.expanduser().resolve() if args.prompt_output else element_csv.with_name("image_prompts_plus.csv")
         element_output = args.element_output.expanduser().resolve() if args.element_output else element_csv.with_name("element_timeline_with_assets.csv")
         rows = read_elements(element_csv)
-        if args.mode == "remotion":
-            rows = collapse_remotion_rows(rows)
         library_assets = scan_asset_library(args.asset_library.expanduser().resolve()) if args.image_source == "library" else []
         asset_dir.mkdir(parents=True, exist_ok=True)
         default_width, default_height = default_image_size(args.orientation)
@@ -140,6 +134,7 @@ def main() -> int:
                     element_id=row["element_id"], role=row["role"], content=row["content"],
                     shot_text="", width=width, height=height,
                     visual_theme=args.theme, orientation=args.orientation,
+                    industry=args.industry,
                 )
                 new_row["asset_path"] = str(asset_path)
                 if library_match is None:
@@ -166,54 +161,6 @@ def main() -> int:
     print(f"生图提示词 CSV: {prompt_output}")
     print(f"带素材路径元素 CSV: {element_output}")
     return 0
-
-
-def collapse_remotion_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
-    """Collapse one Jianying storyboard into one composite image per shot.
-
-    Step 04 still produces the detailed semantic plan. Remotion only needs a
-    single visual anchor per camera shot, so the image model receives the
-    background summary and all element descriptions in one prompt.
-    """
-    grouped: dict[str, list[dict[str, str]]] = {}
-    order: list[str] = []
-    for row in rows:
-        shot_id = row["shot_id"]
-        if shot_id not in grouped:
-            grouped[shot_id] = []
-            order.append(shot_id)
-        grouped[shot_id].append(row)
-
-    collapsed: list[dict[str, str]] = []
-    for shot_id in order:
-        shot_rows = grouped[shot_id]
-        background = next((row for row in shot_rows if row["role"] == "background"), None)
-        elements = [row for row in shot_rows if row["role"] == "element"]
-        if background is None and not elements:
-            raise ValueError(f"Shot {shot_id} 没有可用的视觉内容")
-        source = background or elements[0]
-        parts: list[str] = []
-        if background is not None:
-            parts.append(f"场景背景与标题：{_compact_remotion_text(background['content'], 170)}")
-        if elements:
-            descriptions = "；".join(_compact_remotion_text(row["content"], 120) for row in elements)
-            parts.append(f"同一画面中的主体和关系：{descriptions}")
-        content = _compact_remotion_text("；".join(parts), 500)
-        collapsed.append({
-            "element_id": f"s{shot_id}_img01",
-            "shot_id": shot_id,
-            "type": "image",
-            "role": "element",
-            "content": content,
-            "start_ms": source["start_ms"],
-            "end_ms": source["end_ms"],
-        })
-    return collapsed
-
-
-def _compact_remotion_text(value: str, limit: int) -> str:
-    value = visual_only_content(value)
-    return value if len(value) <= limit else value[: max(1, limit - 1)].rstrip("，。；、 ") + "…"
 
 
 def read_elements(path: Path) -> list[dict[str, str]]:
@@ -246,6 +193,7 @@ def build_prompt(
     height: int,
     visual_theme: str = "",
     orientation: str = "",
+    industry: str = DEFAULT_INDUSTRY,
 ) -> str:
     # Keep these arguments in the public API for callers and tests.  They are
     # deliberately not used to rewrite content: Step 05 is style-only.
@@ -258,7 +206,7 @@ def build_prompt(
         raise ValueError(f"图片元素 role 不支持生图：{resolved_role or '<empty>'}")
     canvas = "16:9 横屏" if normalize_orientation(orientation) == "landscape" else "竖屏"
     template = BACKGROUND_IMAGE_PROMPT if resolved_role == "background" else ELEMENT_IMAGE_PROMPT
-    prompt = build_structured_prompt(template, design, canvas)
+    prompt = build_structured_prompt(template, design, canvas) + "\n\n#行业设定\n" + industry_prompt(industry)
     del visual_theme
     return prompt
 
