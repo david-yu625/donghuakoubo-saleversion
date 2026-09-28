@@ -26,6 +26,7 @@ from ..pipeline_runtime import (
     update_env_file,
 )
 from ..paths import default_draft_folder
+from ..security_guard.secure_files import is_encrypted, read_text as secure_read_text
 
 
 class GuiPipelineTest(unittest.TestCase):
@@ -190,7 +191,8 @@ class GuiPipelineTest(unittest.TestCase):
             result = save_copywriting_text(path, "新标题\r\n新正文\r\n\r\n")
 
             self.assertEqual(result, path.resolve())
-            self.assertEqual(path.read_text(encoding="utf-8"), "新标题\n新正文\n")
+            self.assertTrue(is_encrypted(path))
+            self.assertEqual(secure_read_text(path, encoding="utf-8"), "新标题\n新正文\n")
             self.assertFalse((path.parent / ".wenan.txt.tmp").exists())
 
     def test_copywriting_editor_rejects_empty_content(self):
@@ -201,7 +203,7 @@ class GuiPipelineTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "文案不能为空"):
                 save_copywriting_text(path, " \n\t")
 
-            self.assertEqual(path.read_text(encoding="utf-8"), "原文\n")
+            self.assertEqual(secure_read_text(path, encoding="utf-8"), "原文\n")
 
     def test_full_pipeline_generates_images_by_default(self):
         commands, _ = build_commands(Options(

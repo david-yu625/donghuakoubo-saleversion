@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from .prepare.image_generation import (
 )
 from .prepare.voice_timeline import DEFAULT_TTS_SPEAKER
 from .prepare.topic_generation import record_topic
+from .security_guard.secure_files import unlocked_files
 from .prepare.cover import resolve_cover_size
 from .settings import (
     DEFAULT_SUBTITLE_BACKGROUND_COLOR,
@@ -321,10 +323,15 @@ class Runner:
         for label, command in commands:
             if self._stop_requested.is_set():
                 raise RuntimeError("任务已停止")
-            if is_image_generation_command(command):
-                self.run_image_command_with_missing_retry(label, command, env)
-            else:
-                self.run_command(label, command, env)
+            # Process text is encrypted while idle. Each child command gets a
+            # short-lived plaintext view, then the tree is locked again.
+            with ExitStack() as secure_contexts:
+                for root in secure_roots_for_command(command, output_dir):
+                    secure_contexts.enter_context(unlocked_files(root))
+                if is_image_generation_command(command):
+                    self.run_image_command_with_missing_retry(label, command, env)
+                else:
+                    self.run_command(label, command, env)
         if emit_lifecycle:
             self.log("全部完成")
             self.emit("status", "完成")
@@ -421,8 +428,9 @@ def save_copywriting_text(path: Path, content: str) -> Path:
     path = path.expanduser().resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp")
-    temporary.write_text(normalized + "\n", encoding="utf-8")
-    temporary.replace(path)
+    with unlocked_files(path.parent):
+        temporary.write_text(normalized + "\n", encoding="utf-8")
+        temporary.replace(path)
     return path
 
 
@@ -464,6 +472,26 @@ def _images_complete(prompt_csv: Path) -> bool:
 
 def is_image_generation_command(command: list[str]) -> bool:
     return "src.06_generate_images" in command
+
+
+def secure_roots_for_command(command: list[str], output_dir: Path) -> tuple[Path, ...]:
+    """Return project trees that a child command may read or write as text."""
+    roots = [output_dir.expanduser().resolve()]
+    if "src.commands.build_portrait_package" in command:
+        module_index = command.index("src.commands.build_portrait_package")
+        if module_index + 1 < len(command):
+            roots.append(Path(command[module_index + 1]).expanduser().resolve())
+    if "src.commands.render_infinite_canvas" in command:
+        experiment = PROJECT_ROOT / "experiments" / "remotion_scripted"
+        roots.extend((experiment / "runs", experiment / "public", experiment / "out"))
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for root in roots:
+        if root in seen:
+            continue
+        seen.add(root)
+        unique.append(root)
+    return tuple(unique)
 
 
 def image_prompt_csv_from_command(command: list[str]) -> Path | None:
@@ -575,14 +603,15 @@ def reuse_completed_materials(options: Options, *, output_root: Path = OUTPUT_RO
     prompt_csv = topic_dir / ("image_prompts_remotion.csv" if remotion else "image_prompts_plus.csv")
     element_csv = topic_dir / ("element_timeline_remotion.csv" if remotion else "element_timeline_with_assets.csv")
 
-    complete = (
-        wenan.is_file(),
-        _is_current(narration, wenan) and _is_current(timeline, wenan),
-        _is_current(shot_csv, wenan, timeline),
-        _is_current(storyboard_csv, shot_csv),
-        _is_current(prompt_csv, storyboard_csv) and _is_current(element_csv, storyboard_csv),
-        _images_complete(prompt_csv),
-    )
+    with unlocked_files(topic_dir):
+        complete = (
+            wenan.is_file(),
+            _is_current(narration, wenan) and _is_current(timeline, wenan),
+            _is_current(shot_csv, wenan, timeline),
+            _is_current(storyboard_csv, shot_csv),
+            _is_current(prompt_csv, storyboard_csv) and _is_current(element_csv, storyboard_csv),
+            _images_complete(prompt_csv),
+        )
     try:
         first_incomplete = complete.index(False)
     except ValueError:

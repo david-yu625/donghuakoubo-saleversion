@@ -8,6 +8,7 @@ from .license import (
     save_license,
     verify_license,
 )
+from .secure_files import decrypt_file, encrypt_file, is_encrypted, read_text, unlocked_files
 
 __all__ = [
     "LicenseError",
@@ -16,4 +17,9 @@ __all__ = [
     "load_license",
     "save_license",
     "verify_license",
+    "decrypt_file",
+    "encrypt_file",
+    "is_encrypted",
+    "read_text",
+    "unlocked_files",
 ]

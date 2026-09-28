@@ -127,6 +127,7 @@ from .prepare.cover import (
 from .prepare.copywriting import revise_copywriting
 from .prepare.topic_generation import generate_unique_topics, record_topic
 from .security_guard.activation_dialog import ensure_license
+from .security_guard.secure_files import read_text as secure_read_text, unlocked_files
 
 
 WORKFLOW_LANDSCAPE = "\u6a2a\u7248\u6210\u7247\uff08\u6807\u9898+\u5b57\u5e55\uff09"
@@ -2213,7 +2214,7 @@ class PipelineWindow(QMainWindow):
         copy_path = OUTPUT_ROOT / safe_topic(topic) / "wenan.txt"
         try:
             if copy_path.is_file():
-                parts.append(copy_path.read_text(encoding="utf-8-sig")[:6000])
+                parts.append(secure_read_text(copy_path)[:6000])
         except OSError:
             pass
         return "\n\n".join(part for part in parts if part)
@@ -2877,7 +2878,7 @@ class PipelineWindow(QMainWindow):
         options = self._read_options()
         copy_path = self.output_dir() / "wenan.txt"
         try:
-            if not copy_path.is_file() or not copy_path.read_text(encoding="utf-8-sig").strip():
+            if not copy_path.is_file() or not secure_read_text(copy_path).strip():
                 raise ValueError("当前主题还没有可用的 wenan.txt")
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "缺少文案", f"请先生成或编辑文案：\n{copy_path}\n\n{exc}")
@@ -3166,7 +3167,8 @@ class PipelineWindow(QMainWindow):
         if not prompt_csv.is_file():
             return 0, 0
         try:
-            items = load_image_review_items(prompt_csv, PROJECT_ROOT)
+            with unlocked_files(prompt_csv.parent):
+                items = load_image_review_items(prompt_csv, PROJECT_ROOT)
         except (OSError, ValueError):
             return 0, 0
         generated = 0
@@ -3351,7 +3353,7 @@ class PipelineWindow(QMainWindow):
         except (OSError, EOFError, wave.Error):
             return "已生成"
         try:
-            char_count = count_speech_chars(copy.read_text(encoding="utf-8-sig"))
+            char_count = count_speech_chars(secure_read_text(copy))
         except (OSError, UnicodeError):
             return f"{duration:.1f} 秒"
         return f"{char_count} 字 / {duration:.1f} 秒"
@@ -3374,7 +3376,7 @@ class PipelineWindow(QMainWindow):
         dialog.setWindowTitle(artifact.name)
         dialog.resize(960, 680)
         layout = QVBoxLayout(dialog)
-        editor = QPlainTextEdit(artifact.read_text(encoding="utf-8", errors="ignore"))
+        editor = QPlainTextEdit(secure_read_text(artifact, encoding="utf-8", errors="ignore"))
         editor.setReadOnly(True)
         layout.addWidget(editor)
         dialog.exec()
@@ -3384,7 +3386,7 @@ class PipelineWindow(QMainWindow):
         dialog.setWindowTitle("查看并修改文案")
         dialog.resize(960, 760)
         layout = QVBoxLayout(dialog)
-        editor = QPlainTextEdit(artifact.read_text(encoding="utf-8", errors="ignore"))
+        editor = QPlainTextEdit(secure_read_text(artifact, encoding="utf-8", errors="ignore"))
         layout.addWidget(editor, 1)
 
         feedback_label = QLabel("修改意见")
@@ -3495,7 +3497,8 @@ class PipelineWindow(QMainWindow):
             QMessageBox.information(self, "未找到文件", f"没有找到生图提示词：{prompt_csv}")
             return
         try:
-            items = load_image_review_items(prompt_csv, PROJECT_ROOT)
+            with unlocked_files(prompt_csv.parent):
+                items = load_image_review_items(prompt_csv, PROJECT_ROOT)
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, "读取失败", str(exc))
             return
