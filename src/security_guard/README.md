@@ -33,6 +33,17 @@ python3 -m src.security_guard \
 
 把生成的 `customer-license.json` 发给客户，客户在激活窗口中导入即可。
 
+## 图形化签发
+
+卖家不需要执行命令。双击项目里的：
+
+- macOS：`tools/start_license_issuer.command`
+- Windows：`tools/start_license_issuer.bat`
+
+这个窗口只在卖家电脑上使用。客户版不应包含 `tools/` 目录、
+`issuer_dialog.py`、`issue_license.py`、`generate_keys.py` 或私钥文件；
+客户版只保留许可证验证和导入功能。
+
 ## 设计边界
 
 - 客户端只包含公钥，不包含签发私钥。
