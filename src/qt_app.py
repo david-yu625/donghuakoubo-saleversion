@@ -1610,6 +1610,38 @@ class PipelineWindow(QMainWindow):
                 item.widget().setVisible(False)
         preview_widget.setVisible(False)
 
+        # Keep the two settings that still matter for the current release in
+        # a compact, purpose-built panel. The old visual-settings panel stays
+        # hidden so its values remain compatible with existing projects.
+        render_panel.setVisible(False)
+        local_panel, local_layout = self._panel("全局设置")
+        local_grid = QGridLayout()
+        local_grid.setHorizontalSpacing(14)
+        local_grid.setVerticalSpacing(10)
+        for visible_row, (label, key, source_row) in enumerate(
+            (
+                ("背景音乐", "BACKGROUND_MUSIC", 8),
+                ("草稿目录", "DRAFT_FOLDER", 9),
+            )
+        ):
+            source_widget = render_grid.itemAtPosition(source_row, 1)
+            path_widget = source_widget.widget() if source_widget is not None else None
+            if path_widget is None:
+                continue
+            render_grid.removeWidget(path_widget)
+            local_grid.addWidget(QLabel(label), visible_row, 0)
+            local_grid.addWidget(path_widget, visible_row, 1)
+        local_grid.setColumnStretch(1, 1)
+        local_layout.addLayout(local_grid)
+        content_layout.addWidget(local_panel)
+
+        settings_actions = QHBoxLayout()
+        settings_actions.addStretch()
+        settings_actions.addWidget(
+            self._button("保存设置", QStyle.SP_DialogSaveButton, self.save_settings, "primary")
+        )
+        content_layout.addLayout(settings_actions)
+
         render_layout.addLayout(render_body, 1)
         content_layout.addWidget(render_panel)
         content_layout.addStretch()
