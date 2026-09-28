@@ -126,6 +126,7 @@ from .prepare.cover import (
 )
 from .prepare.copywriting import revise_copywriting
 from .prepare.topic_generation import generate_unique_topics, record_topic
+from .security_guard.activation_dialog import ensure_license
 
 
 WORKFLOW_LANDSCAPE = "\u6a2a\u7248\u6210\u7247\uff08\u6807\u9898+\u5b57\u5e55\uff09"
@@ -3629,6 +3630,8 @@ def main() -> int:
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE_SHEET)
     app.setFont(QFont("Segoe UI", 9))
+    if not ensure_license():
+        return 0
     window = PipelineWindow()
     window.show()
     return app.exec()

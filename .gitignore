@@ -20,6 +20,9 @@ output/
 generated_images/
 release/
 *.zip
+src/security_guard/release_keys/
+*.license.json
+*.private_key.pem
 /*.mp4
 vendor/pyJianYingDraft/.git/
 .idea/

@@ -5,6 +5,7 @@ imageio==2.37.3
 openai==2.30.0
 pymediainfo==7.0.1
 requests==2.33.1
+cryptography==46.0.2
 volcengine==1.0.219
 uiautomation>=2; sys_platform == "win32"
 playwright>=1.40
