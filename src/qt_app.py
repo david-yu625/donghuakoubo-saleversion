@@ -1596,7 +1596,19 @@ class PipelineWindow(QMainWindow):
         preview = PreviewImageLabel(preview_pixmap)
         preview.setToolTip("标题、展示区域和字幕设置示意")
         preview_column.addWidget(preview, 1)
-        render_body.addLayout(preview_column, 2)
+        preview_widget = QWidget()
+        preview_widget.setLayout(preview_column)
+        render_body.addWidget(preview_widget, 2)
+
+        # These optional visual controls are temporarily hidden from the
+        # customer-facing settings page. Their values remain in the model so
+        # the existing rendering pipeline and future re-enabling stay intact.
+        for index in range(render_grid.count()):
+            item = render_grid.itemAt(index)
+            row, _column, _row_span, _column_span = render_grid.getItemPosition(index)
+            if row <= 7 and item.widget() is not None:
+                item.widget().setVisible(False)
+        preview_widget.setVisible(False)
 
         render_layout.addLayout(render_body, 1)
         content_layout.addWidget(render_panel)
